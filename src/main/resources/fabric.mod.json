@@ -2,7 +2,7 @@
 	"schemaVersion": 1,
 	"id": "taskmanager",
 	"version": "${version}",
-	"name": "Task Manager",
+	"name": "任务管理器",
 	"description": "游戏内任务管理器：管理游戏内全部进程与线程，提供进程树、资源监控（CPU/内存/GPU）与进程操作（暂停/恢复/终止/重启/调整优先级/启动）。",
 	"authors": [
 		"WorkBuddy"
