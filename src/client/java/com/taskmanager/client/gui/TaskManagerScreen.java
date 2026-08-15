@@ -317,7 +317,8 @@ public class TaskManagerScreen extends Screen {
 	private void renderGroupRow(GuiGraphicsExtractor graphics, String label, int depth, int screenY,
 	                            boolean expanded, int color) {
 		int x = 20 + depth * 16;
-		tmText(graphics, (expanded ? "v " : "> ") + label, x, screenY, color);
+		tmText(graphics, expanded ? "v" : ">", x, screenY, color);
+		tmText(graphics, label, x + 12, screenY, color);
 	}
 
 	private void renderProcessRow(GuiGraphicsExtractor graphics, Process p, int depth, int x, int screenY) {
@@ -326,7 +327,8 @@ public class TaskManagerScreen extends Screen {
 			graphics.fill(15, screenY - 1, x + 440, screenY + 13, accent());
 		}
 		boolean expanded = expandedProcesses.contains(p.pid());
-		tmText(graphics, (expanded ? "v " : "> ") + p.pid(), x + ind, screenY, text());
+		tmText(graphics, expanded ? "v" : ">", x + ind, screenY, text());
+		tmText(graphics, String.valueOf(p.pid()), x + ind + 12, screenY, text());
 		tmText(graphics, p.name(), x + 50 + ind, screenY, text());
 		tmText(graphics, tr(stateKey(p.state())), x + 220 + ind, screenY, stateColor(p));
 		tmText(graphics, cpuText(p), x + 300 + ind, screenY, heatColor(p.usage().cpuUsage()));
@@ -335,8 +337,13 @@ public class TaskManagerScreen extends Screen {
 
 	private void renderThreadRow(GuiGraphicsExtractor graphics, ThreadInfo thread, int depth, int x, int screenY) {
 		int ind = depth * 16;
-		String prefix = thread.daemon() ? "* " : "- ";
-		tmText(graphics, prefix + thread.threadName(), x + ind, screenY, textMuted());
+		if (thread.threadId() == selectedThreadId) {
+			graphics.fill(15, screenY - 1, x + 440, screenY + 13, accent());
+		}
+		boolean expanded = expandedThreads.contains(thread.threadId());
+		tmText(graphics, expanded ? "v" : ">", x + ind, screenY, textMuted());
+		String prefix = thread.daemon() ? "*" : "-";
+		tmText(graphics, prefix + " " + thread.threadName(), x + ind + 12, screenY, textMuted());
 		tmText(graphics, stateText(thread.state()), x + 170 + ind, screenY, stateColor2(thread.state()));
 		tmText(graphics, cpuText2(thread), x + 250 + ind, screenY, heatColor(thread.usage().cpuUsage()));
 		tmText(graphics, allocText(thread.allocatedBytes()), x + 320 + ind, screenY, textMuted());
@@ -659,29 +666,35 @@ public class TaskManagerScreen extends Screen {
 						}
 						case KIND_PROCESS -> {
 							Process p = row.process();
-							selectedThreadId = -1;
-							if (selectedPid == p.pid()) {
-								// 再次点击同一进程：切换展开/折叠
+							int arrowX = 20 + row.depth() * 16;
+							if (mx >= arrowX && mx < arrowX + 14) {
+								// 点击箭头：切换展开/折叠
 								if (expandedProcesses.contains(p.pid())) {
 									expandedProcesses.remove(p.pid());
 								} else {
 									expandedProcesses.add(p.pid());
 								}
 							} else {
-								// 首次点击：选中并立即展开（一步到位，避免「点两次才展开」）
-								expandedProcesses.add(p.pid());
+								// 点击行其他区域：选中进程（详情面板显示 + 操作按钮）
+								selectedThreadId = -1;
+								selectedPid = p.pid();
 							}
-							selectedPid = p.pid();
 							return true;
 						}
 						case KIND_THREAD -> {
 							ThreadInfo t = row.thread();
-							selectedThreadId = t.threadId();
-							selectedPid = -1;
-							if (expandedThreads.contains(t.threadId())) {
-								expandedThreads.remove(t.threadId());
+							int arrowX = 20 + row.depth() * 16;
+							if (mx >= arrowX && mx < arrowX + 14) {
+								// 点击箭头：切换方法级展开/折叠
+								if (expandedThreads.contains(t.threadId())) {
+									expandedThreads.remove(t.threadId());
+								} else {
+									expandedThreads.add(t.threadId());
+								}
 							} else {
-								expandedThreads.add(t.threadId());
+								// 点击行其他区域：选中线程（详情面板显示线程信息 + 线程操作）
+								selectedThreadId = t.threadId();
+								selectedPid = -1;
 							}
 							return true;
 						}
