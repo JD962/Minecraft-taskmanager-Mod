@@ -15,6 +15,7 @@ public final class Process {
 	private final int pid;
 	private final ProcessSource source;
 	private final ProcessCategory category;
+	private final ProcessSide side;
 	/** 实体细分类别（如「生物」「玩家」「掉落物实体」「其他实体」），全局类为 null */
 	private final String subCategory;
 	private final WeakReference<Object> targetRef;
@@ -29,12 +30,13 @@ public final class Process {
 	private volatile ResourceUsage usage = ResourceUsage.EMPTY;
 	private final List<ThreadInfo> threads = new CopyOnWriteArrayList<>();
 
-	public Process(int pid, String name, ProcessSource source, ProcessCategory category, String subCategory,
+	public Process(int pid, String name, ProcessSource source, ProcessCategory category, ProcessSide side, String subCategory,
 	               Object target, int entityId) {
 		this.pid = pid;
 		this.name = name;
 		this.source = source;
 		this.category = category;
+		this.side = side;
 		this.subCategory = subCategory;
 		this.targetRef = target != null ? new WeakReference<>(target) : null;
 		this.entityId = entityId;
@@ -60,6 +62,10 @@ public final class Process {
 
 	public ProcessCategory category() {
 		return category;
+	}
+
+	public ProcessSide side() {
+		return side;
 	}
 
 	public String subCategory() {

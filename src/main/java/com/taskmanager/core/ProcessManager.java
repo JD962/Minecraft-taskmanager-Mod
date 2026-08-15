@@ -4,6 +4,7 @@ import com.taskmanager.api.ProcessAdapter;
 import com.taskmanager.api.ProcessState;
 import com.taskmanager.model.Process;
 import com.taskmanager.model.ProcessCategory;
+import com.taskmanager.model.ProcessSide;
 import com.taskmanager.model.ProcessSource;
 import com.taskmanager.registry.ProcessAdapterRegistry;
 import java.util.Collection;
@@ -45,7 +46,7 @@ public final class ProcessManager {
 		String name = entity.getName().getString();
 		String subCategory = classifyEntity(entity);
 		Process process = new Process(nextPid(), name, ProcessSource.game(), ProcessCategory.ENTITY,
-			subCategory, entity, entityId);
+			ProcessSide.SERVER, subCategory, entity, entityId);
 		bindAdapter(process, ProcessSource.GAME_ID, name);
 		processes.put(process.pid(), process);
 		entityProcesses.put(entityId, process);
@@ -68,8 +69,8 @@ public final class ProcessManager {
 	}
 
 	/** 注册全局进程（世界 tick、渲染循环、网络 IO 等系统级任务）。 */
-	public Process registerGlobal(String name, ProcessSource source) {
-		Process process = new Process(nextPid(), name, source, ProcessCategory.GLOBAL, null, null, -1);
+	public Process registerGlobal(String name, ProcessSource source, ProcessSide side) {
+		Process process = new Process(nextPid(), name, source, ProcessCategory.GLOBAL, side, null, null, -1);
 		bindAdapter(process, source.id(), name);
 		processes.put(process.pid(), process);
 		return process;

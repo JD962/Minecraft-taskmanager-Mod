@@ -4,7 +4,11 @@ import com.taskmanager.command.TaskManagerCommand;
 import com.taskmanager.core.ModManager;
 import com.taskmanager.core.ProcessManager;
 import com.taskmanager.item.TaskManagerItem;
+import com.taskmanager.model.ProcessSide;
 import com.taskmanager.model.ProcessSource;
+import com.taskmanager.remote.TaskManagerProcessDataProvider;
+import com.taskmanager.remote.TaskManagerServer;
+import com.taskmanager.remote.TaskManagerServerConfig;
 import com.taskmanager.sampling.NvmlGpuSampler;
 import com.taskmanager.sampling.ResourceSampler;
 import net.fabricmc.api.ModInitializer;
@@ -25,6 +29,9 @@ public class TaskManagerMod implements ModInitializer {
 
 	public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
+	/** 远程管理 token（后续可配置）。 */
+	private static final String REMOTE_TOKEN = "taskmanager-default-token";
+
 	/** 任务管理器终端物品（原版容器 UI 的进入渠道）。 */
 	public static final ResourceKey<Item> TERMINAL_KEY = ResourceKey.create(Registries.ITEM, id("task_manager_terminal"));
 	public static final Item TASK_MANAGER_TERMINAL = Registry.register(
@@ -43,10 +50,10 @@ public class TaskManagerMod implements ModInitializer {
 		// 全局进程：服务器启动时登记系统级任务
 		ServerLifecycleEvents.SERVER_STARTING.register(server -> {
 			ProcessManager pm = ProcessManager.getInstance();
-			pm.registerGlobal("服务端主循环", ProcessSource.game());
-			pm.registerGlobal("渲染循环", ProcessSource.game());
-			pm.registerGlobal("网络 IO", ProcessSource.game());
-			pm.registerGlobal("其他线程", ProcessSource.game());
+			pm.registerGlobal("服务端主循环", ProcessSource.game(), ProcessSide.SERVER);
+			pm.registerGlobal("渲染循环", ProcessSource.game(), ProcessSide.CLIENT);
+			pm.registerGlobal("网络 IO", ProcessSource.game(), ProcessSide.SERVER);
+			pm.registerGlobal("其他线程", ProcessSource.game(), ProcessSide.SERVER);
 			ModManager.getInstance().registerAllMods(pm);
 		});
 
@@ -59,11 +66,25 @@ public class TaskManagerMod implements ModInitializer {
 			LOGGER.info("[任务管理器] GPU 采样器可用性: {}", gpuSampler.isAvailable());
 		});
 
-		// 服务器停止时停止采样、释放 GPU、清空进程表
+		// 远程管理服务端：启动/停止
+		TaskManagerServer remoteServer = new TaskManagerServer(
+			TaskManagerServerConfig.localhost(REMOTE_TOKEN), TaskManagerProcessDataProvider.getInstance());
+		ServerLifecycleEvents.SERVER_STARTED.register(server -> {
+			try {
+				remoteServer.start();
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+			} catch (RuntimeException e) {
+				LOGGER.warn("[任务管理器] 远程服务端启动失败: {}", e.getMessage());
+			}
+		});
+
+		// 服务器停止时停止采样、释放 GPU、清空进程表、停止远程服务端
 		ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
 			ResourceSampler.getInstance().stop();
 			gpuSampler.close();
 			ProcessManager.getInstance().clear();
+			remoteServer.stop();
 		});
 
 		// /taskmgr 命令

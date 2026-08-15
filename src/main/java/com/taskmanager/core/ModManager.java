@@ -1,6 +1,7 @@
 package com.taskmanager.core;
 
 import com.taskmanager.model.Process;
+import com.taskmanager.model.ProcessSide;
 import com.taskmanager.model.ProcessSource;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -46,7 +47,7 @@ public final class ModManager {
 				continue;
 			}
 			String name = mod.getMetadata().getName();
-			Process process = processManager.registerGlobal(name, ProcessSource.mod(id));
+			Process process = processManager.registerGlobal(name, ProcessSource.mod(id), ProcessSide.SERVER);
 			modProcesses.put(id, process);
 		}
 	}
