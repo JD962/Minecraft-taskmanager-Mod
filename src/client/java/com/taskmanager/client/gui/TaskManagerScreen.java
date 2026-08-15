@@ -13,6 +13,7 @@ import com.taskmanager.model.ThreadInfo;
 import com.taskmanager.sampling.MethodProfiler;
 import com.taskmanager.sampling.ResourceSampler;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -146,34 +147,38 @@ public class TaskManagerScreen extends Screen {
 	private static final int KIND_THREAD = 4;
 	private static final int KIND_METHOD = 5;
 
-	/** 扁平化可视行：渲染与命中测试共用，保证点击不偏移。key 为分组行的展开键。 */
+	/** 扁平化可视行：渲染与命中测试共用，保证点击不偏移。key 为展开键（稳定来源 ID），label 为显示文字。 */
 	private record Row(int kind, Process process, ThreadInfo thread, MethodProfiler.MethodNode method,
-	                   String key, int depth, int y) {
+	                   String key, String label, int depth, int y) {
 	}
 
 	/** 构建树形行布局：来源 → 类别 → 细分类（实体）→ 进程 → 线程 → 方法。 */
 	private List<Row> buildRows() {
 		List<Process> processes = filteredProcesses();
-		// 首次构建时默认展开来源与类别，让用户直接看到进程层
+		// 首次构建时默认展开来源与类别，让用户直接看到进程层（键用稳定来源 ID）
 		if (!treeInitialized) {
 			treeInitialized = true;
 			for (Process p : processes) {
-				expandedSources.add(p.source().displayName());
-				expandedCategories.add(p.source().displayName() + "::"
-					+ (p.category() == ProcessCategory.ENTITY ? "实体类" : "全局类"));
+				String sid = p.source().id();
+				expandedSources.add(sid);
+				expandedCategories.add(sid + "::" + (p.category() == ProcessCategory.ENTITY ? "实体类" : "全局类"));
 			}
 		}
+		// 按来源 ID 分组（稳定，不随显示名/本地化变化），显示用 displayName
 		Map<String, List<Process>> bySource = new LinkedHashMap<>();
+		Map<String, String> sourceLabels = new HashMap<>();
 		for (Process p : processes) {
-			bySource.computeIfAbsent(p.source().displayName(), k -> new ArrayList<>()).add(p);
+			String sid = p.source().id();
+			bySource.computeIfAbsent(sid, k -> new ArrayList<>()).add(p);
+			sourceLabels.putIfAbsent(sid, p.source().displayName());
 		}
 		List<Row> rows = new ArrayList<>();
 		int y = 0;
 		for (Map.Entry<String, List<Process>> src : bySource.entrySet()) {
-			String sourceName = src.getKey();
-			rows.add(new Row(KIND_SOURCE, null, null, null, sourceName, 0, y));
+			String sourceId = src.getKey();
+			rows.add(new Row(KIND_SOURCE, null, null, null, sourceId, sourceLabels.get(sourceId), 0, y));
 			y += ROW_H;
-			if (!expandedSources.contains(sourceName)) {
+			if (!expandedSources.contains(sourceId)) {
 				continue;
 			}
 			Map<String, List<Process>> byCategory = new LinkedHashMap<>();
@@ -182,8 +187,8 @@ public class TaskManagerScreen extends Screen {
 					k -> new ArrayList<>()).add(p);
 			}
 			for (Map.Entry<String, List<Process>> cat : byCategory.entrySet()) {
-				String catKey = sourceName + "::" + cat.getKey();
-				rows.add(new Row(KIND_CATEGORY, null, null, null, cat.getKey(), 1, y));
+				String catKey = sourceId + "::" + cat.getKey();
+				rows.add(new Row(KIND_CATEGORY, null, null, null, catKey, cat.getKey(), 1, y));
 				y += ROW_H;
 				if (!expandedCategories.contains(catKey)) {
 					continue;
@@ -196,7 +201,7 @@ public class TaskManagerScreen extends Screen {
 					}
 					for (Map.Entry<String, List<Process>> sub : bySub.entrySet()) {
 						String subKey = catKey + "::" + sub.getKey();
-						rows.add(new Row(KIND_SUBCATEGORY, null, null, null, sub.getKey(), 2, y));
+						rows.add(new Row(KIND_SUBCATEGORY, null, null, null, subKey, sub.getKey(), 2, y));
 						y += ROW_H;
 						if (!expandedSubCategories.contains(subKey)) {
 							continue;
@@ -216,18 +221,18 @@ public class TaskManagerScreen extends Screen {
 	}
 
 	private int addProcessRows(List<Row> rows, Process p, int y) {
-		rows.add(new Row(KIND_PROCESS, p, null, null, null, 3, y));
+		rows.add(new Row(KIND_PROCESS, p, null, null, null, null, 3, y));
 		y += ROW_H;
 		if (expandedProcesses.contains(p.pid())) {
 			for (ThreadInfo t : p.threads()) {
-				rows.add(new Row(KIND_THREAD, p, t, null, null, 4, y));
+				rows.add(new Row(KIND_THREAD, p, t, null, null, null, 4, y));
 				y += ROW_H;
 				if (expandedThreads.contains(t.threadId())) {
 					List<MethodProfiler.MethodNode> methods = methodSnapshot().get(t.threadName());
 					if (methods != null) {
 						int limit = Math.min(6, methods.size());
 						for (int j = 0; j < limit; j++) {
-							rows.add(new Row(KIND_METHOD, p, t, methods.get(j), null, 5, y));
+							rows.add(new Row(KIND_METHOD, p, t, methods.get(j), null, null, 5, y));
 							y += ROW_H;
 						}
 					}
@@ -273,11 +278,11 @@ public class TaskManagerScreen extends Screen {
 				continue;
 			}
 			switch (row.kind()) {
-				case KIND_SOURCE -> renderGroupRow(graphics, row.key(), 0, screenY,
+				case KIND_SOURCE -> renderGroupRow(graphics, row.label(), 0, screenY,
 					expandedSources.contains(row.key()), text());
-				case KIND_CATEGORY -> renderGroupRow(graphics, row.key(), 1, screenY,
+				case KIND_CATEGORY -> renderGroupRow(graphics, row.label(), 1, screenY,
 					expandedCategories.contains(row.key()), textMuted());
-				case KIND_SUBCATEGORY -> renderGroupRow(graphics, row.key(), 2, screenY,
+				case KIND_SUBCATEGORY -> renderGroupRow(graphics, row.label(), 2, screenY,
 					expandedSubCategories.contains(row.key()), textMuted());
 				case KIND_PROCESS -> renderProcessRow(graphics, row.process(), row.depth(), x, screenY);
 				case KIND_THREAD -> renderThreadRow(graphics, row.thread(), row.depth(), x, screenY);
@@ -421,13 +426,22 @@ public class TaskManagerScreen extends Screen {
 		return null;
 	}
 
-	/** 调整线程优先级：档位 delta 映射到 Java Thread 优先级（MIN=1 ~ MAX=10）。 */
+	/** 调整线程优先级：仅允许非核心线程，核心线程（渲染/服务端/Netty/JFR/GC 等）不可调。 */
 	private static void adjustThreadPriority(long threadId, int delta) {
 		Thread thread = findJavaThread(threadId);
-		if (thread != null) {
-			int newPrio = Math.clamp(thread.getPriority() + delta, Thread.MIN_PRIORITY, Thread.MAX_PRIORITY);
-			thread.setPriority(newPrio);
+		if (thread == null || isCoreThread(thread.getName())) {
+			return;
 		}
+		int newPrio = Math.clamp(thread.getPriority() + delta, Thread.MIN_PRIORITY, Thread.MAX_PRIORITY);
+		thread.setPriority(newPrio);
+	}
+
+	/** 核心线程黑名单：调整这些线程优先级会导致卡顿/时序问题。 */
+	private static boolean isCoreThread(String name) {
+		return name.startsWith("Server thread") || name.startsWith("Render thread")
+			|| name.startsWith("Netty") || name.contains("JFR") || name.startsWith("TaskManager")
+			|| name.startsWith("Reference") || name.startsWith("Finalizer")
+			|| name.startsWith("GC") || name.startsWith("Signal") || name.startsWith("Common-Cleaner");
 	}
 
 	private static Thread findJavaThread(long threadId) {
@@ -521,12 +535,7 @@ public class TaskManagerScreen extends Screen {
 			this.onClose();
 			return true;
 		}
-		// 主题按钮
-		if (mx >= this.width - 76 && mx <= this.width - 28 && my >= 5 && my <= 21) {
-			darkMode = !darkMode;
-			return true;
-		}
-		// 设置面板（模态，优先于列表命中）：打开时先处理面板内按钮，避免被底层列表拦截
+		// 设置面板（严格模态，最优先）：打开时只响应面板内点击，面板外关闭并吞事件
 		if (showSettings) {
 			int cx = this.width / 2 - 120;
 			int cy = this.height / 2 - 100;
@@ -567,11 +576,16 @@ public class TaskManagerScreen extends Screen {
 				showSettings = false;
 				return true;
 			}
-			// 点击面板外区域：关闭设置面板并消费事件（模态）
-			if (mx < cx || mx > cx + 240 || my < cy || my > cy + 200) {
+			// 面板外关闭并吞事件（左闭右开），面板内未命中按钮也吞事件
+			if (mx < cx || mx >= cx + 240 || my < cy || my >= cy + 200) {
 				showSettings = false;
-				return true;
 			}
+			return true;
+		}
+		// 主题按钮
+		if (mx >= this.width - 76 && mx <= this.width - 28 && my >= 5 && my <= 21) {
+			darkMode = !darkMode;
+			return true;
 		}
 		// 页签
 		for (int i = 0; i < TABS.length; i++) {
