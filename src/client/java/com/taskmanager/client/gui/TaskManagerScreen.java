@@ -261,6 +261,13 @@ public class TaskManagerScreen extends Screen {
 		return panelTop();
 	}
 
+	/** 将滚动偏移 clamp 到当前内容范围，防止展开/折叠后内容滚出视口导致列表空白。 */
+	private void clampScrollToContent(int rowCount) {
+		int viewportHeight = listBottom() - listTop();
+		int maxScroll = Math.max(0, rowCount * ROW_H - viewportHeight);
+		scrollOffset = Math.min(Math.max(scrollOffset, 0), maxScroll);
+	}
+
 	/** 方法级快照（带 1s 缓存，避免渲染循环每帧重建大 Map）。 */
 	private Map<String, List<MethodProfiler.MethodNode>> methodSnapshot() {
 		long now = System.currentTimeMillis();
@@ -283,6 +290,7 @@ public class TaskManagerScreen extends Screen {
 		int top = listTop();
 		int bottom = listBottom();
 		List<Row> rows = buildRows();
+		clampScrollToContent(rows.size());
 		for (Row row : rows) {
 			int screenY = top + row.y() - scrollOffset;
 			if (screenY + ROW_H <= top || screenY >= bottom) {
@@ -611,6 +619,7 @@ public class TaskManagerScreen extends Screen {
 		}
 		// 进程/线程列表点击（选中/展开）——用与渲染一致的扁平化布局做命中测试，避免偏移
 		List<Row> rows = buildRows();
+		clampScrollToContent(rows.size());
 		int top = listTop();
 		int bottom = listBottom();
 		// 鼠标必须在列表区域内（顶部页签以上、底部面板以下）
@@ -652,11 +661,15 @@ public class TaskManagerScreen extends Screen {
 							Process p = row.process();
 							selectedThreadId = -1;
 							if (selectedPid == p.pid()) {
+								// 再次点击同一进程：切换展开/折叠
 								if (expandedProcesses.contains(p.pid())) {
 									expandedProcesses.remove(p.pid());
 								} else {
 									expandedProcesses.add(p.pid());
 								}
+							} else {
+								// 首次点击：选中并立即展开（一步到位，避免「点两次才展开」）
+								expandedProcesses.add(p.pid());
 							}
 							selectedPid = p.pid();
 							return true;
@@ -767,7 +780,6 @@ public class TaskManagerScreen extends Screen {
 
 	@Override
 	public boolean mouseScrolled(double mx, double my, double scrollX, double scrollY) {
-		LOGGER.info("[TM] scroll ({}, {}) dy={}", mx, my, scrollY);
 		int viewportHeight = listBottom() - listTop();
 		int maxScroll = Math.max(0, buildRows().size() * ROW_H - viewportHeight);
 		scrollOffset = Math.clamp(scrollOffset - (int) scrollY * ROW_H, 0, maxScroll);
