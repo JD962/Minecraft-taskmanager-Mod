@@ -52,6 +52,7 @@ public class TaskManagerMod implements ModInitializer {
 		// 全局进程：服务器启动时登记系统级任务
 		ServerLifecycleEvents.SERVER_STARTING.register(server -> {
 			ProcessManager pm = ProcessManager.getInstance();
+			pm.setServer(server);
 			pm.registerGlobal("服务端主循环", ProcessSource.game(), ProcessSide.SERVER);
 			pm.registerGlobal("渲染循环", ProcessSource.game(), ProcessSide.CLIENT);
 			pm.registerGlobal("网络 IO", ProcessSource.game(), ProcessSide.SERVER);
@@ -86,6 +87,7 @@ public class TaskManagerMod implements ModInitializer {
 			ResourceSampler.getInstance().stop();
 			gpuSampler.close();
 			ProcessManager.getInstance().clear();
+			ProcessManager.getInstance().setServer(null);
 			remoteServer.stop();
 			DebugLogger.getInstance().disable();
 			PrcExporter.getInstance().stopRealtime();

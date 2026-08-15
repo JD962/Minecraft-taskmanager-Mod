@@ -10,8 +10,11 @@ import com.taskmanager.registry.ProcessAdapterRegistry;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
@@ -19,15 +22,25 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 
 /**
- * 进程管理器：PID 分配、进程树构建、实体进程随实体增删动态创建/销毁、全局进程登记。
+ * 进程管理器：PID 分配、进程登记、实体进程随实体增删动态创建/销毁、全局进程登记。
+ * <p>
+ * 实体进程以实体 UUID（全局唯一）为索引键，避免实体运行时 ID 跨维度冲突/复用导致误删；
+ * 注册/注销/销毁共用一把注册表锁，保证进程表与实体索引的跨 Map 一致性。
  */
 public final class ProcessManager {
 	private static final ProcessManager INSTANCE = new ProcessManager();
 
 	/** PID 从 1 开始分配，运行期稳定且不回收复用。 */
 	private final AtomicInteger pidCounter = new AtomicInteger(1);
+	/** 进程表（PID → 进程）。 */
 	private final Map<Integer, Process> processes = new ConcurrentHashMap<>();
-	private final Map<Integer, Process> entityProcesses = new ConcurrentHashMap<>();
+	/** 实体索引（实体 UUID → 进程）。 */
+	private final Map<UUID, Process> entityProcesses = new ConcurrentHashMap<>();
+	/** 注册表锁：保证进程表与实体索引的跨 Map 原子一致性。 */
+	private final Object registryLock = new Object();
+
+	/** 当前服务器实例（用于实体副作用调度到主线程），服务器停止时清空。 */
+	private volatile MinecraftServer server;
 
 	private ProcessManager() {
 	}
@@ -36,51 +49,78 @@ public final class ProcessManager {
 		return INSTANCE;
 	}
 
+	/** 设置当前服务器实例（服务器启动时调用）。 */
+	public void setServer(MinecraftServer server) {
+		this.server = server;
+	}
+
+	/** 当前服务器实例，可能为 null（纯客户端）。 */
+	public MinecraftServer server() {
+		return server;
+	}
+
 	/** 注册实体进程（实体加载时调用）；已存在则返回已有进程。 */
 	public Process registerEntity(Entity entity) {
-		int entityId = entity.getId();
-		Process existing = entityProcesses.get(entityId);
-		if (existing != null) {
-			return existing;
+		Objects.requireNonNull(entity, "entity");
+		UUID uuid = entity.getUUID();
+		synchronized (registryLock) {
+			Process existing = entityProcesses.get(uuid);
+			if (existing != null) {
+				return existing;
+			}
+			String name = entity.getName().getString();
+			Process process = new Process(nextPid(), name, ProcessSource.game(), ProcessCategory.ENTITY,
+				ProcessSide.SERVER, classifyEntity(entity), entity, entity.getId(), uuid);
+			bindAdapter(process, ProcessSource.GAME_ID, name);
+			processes.put(process.pid(), process);
+			entityProcesses.put(uuid, process);
+			return process;
 		}
-		String name = entity.getName().getString();
-		String subCategory = classifyEntity(entity);
-		Process process = new Process(nextPid(), name, ProcessSource.game(), ProcessCategory.ENTITY,
-			ProcessSide.SERVER, subCategory, entity, entityId);
-		bindAdapter(process, ProcessSource.GAME_ID, name);
-		processes.put(process.pid(), process);
-		entityProcesses.put(entityId, process);
-		return process;
 	}
 
 	/** 注销实体进程（实体卸载时调用）。 */
 	public Process unregisterEntity(Entity entity) {
-		int entityId = entity.getId();
-		Process process = entityProcesses.remove(entityId);
-		if (process != null) {
+		Objects.requireNonNull(entity, "entity");
+		UUID uuid = entity.getUUID();
+		synchronized (registryLock) {
+			Process process = entityProcesses.get(uuid);
+			if (process == null) {
+				return null;
+			}
 			// 恢复被暂停的 AI，避免 noAI 状态随实体持久化
 			if (process.state() == ProcessState.PAUSED && entity instanceof Mob mob) {
 				mob.setNoAi(false);
 			}
 			process.setState(ProcessState.TERMINATED);
-			processes.remove(process.pid());
+			entityProcesses.remove(uuid, process);
+			processes.remove(process.pid(), process);
+			return process;
 		}
-		return process;
 	}
 
 	/** 注册全局进程（世界 tick、渲染循环、网络 IO 等系统级任务）。 */
 	public Process registerGlobal(String name, ProcessSource source, ProcessSide side) {
-		Process process = new Process(nextPid(), name, source, ProcessCategory.GLOBAL, side, null, null, -1);
+		Objects.requireNonNull(name, "name");
+		Objects.requireNonNull(source, "source");
+		Objects.requireNonNull(side, "side");
+		Process process = new Process(nextPid(), name, source, ProcessCategory.GLOBAL, side, null, null, -1, null);
 		bindAdapter(process, source.id(), name);
 		processes.put(process.pid(), process);
 		return process;
 	}
 
-	/** 销毁指定进程节点。 */
+	/** 销毁指定进程节点（条件删除，避免误删复用键）。 */
 	public void destroy(int pid) {
-		Process process = processes.remove(pid);
-		if (process != null && process.entityId() >= 0) {
-			entityProcesses.remove(process.entityId());
+		synchronized (registryLock) {
+			Process process = processes.get(pid);
+			if (process == null) {
+				return;
+			}
+			processes.remove(pid, process);
+			if (process.entityUuid() != null) {
+				entityProcesses.remove(process.entityUuid(), process);
+			}
+			process.setState(ProcessState.TERMINATED);
 		}
 	}
 
@@ -88,8 +128,8 @@ public final class ProcessManager {
 		return processes.get(pid);
 	}
 
-	public Process getByEntityId(int entityId) {
-		return entityProcesses.get(entityId);
+	public Process getByEntity(Entity entity) {
+		return entity != null ? entityProcesses.get(entity.getUUID()) : null;
 	}
 
 	public Collection<Process> all() {
@@ -98,7 +138,7 @@ public final class ProcessManager {
 
 	public List<Process> bySource(String sourceId) {
 		return processes.values().stream()
-			.filter(p -> p.source().id().equals(sourceId))
+			.filter(p -> Objects.equals(p.source().id(), sourceId))
 			.toList();
 	}
 
@@ -113,14 +153,10 @@ public final class ProcessManager {
 		if (keyword == null || keyword.isBlank()) {
 			return List.copyOf(processes.values());
 		}
-		String lower = keyword.trim().toLowerCase();
+		String lower = keyword.trim().toLowerCase(java.util.Locale.ROOT);
 		return processes.values().stream()
-			.filter(p -> {
-				if (p.name().toLowerCase().contains(lower)) {
-					return true;
-				}
-				return String.valueOf(p.pid()).equals(keyword.trim());
-			})
+			.filter(p -> p.name().toLowerCase(java.util.Locale.ROOT).contains(lower)
+				|| String.valueOf(p.pid()).equals(keyword.trim()))
 			.toList();
 	}
 
@@ -128,10 +164,19 @@ public final class ProcessManager {
 		return processes.size();
 	}
 
-	/** 清空全部进程（服务器停止时调用）。 */
+	/** 清空全部进程（服务器停止时调用），先恢复暂停实体 AI 再清表。 */
 	public void clear() {
-		processes.clear();
-		entityProcesses.clear();
+		synchronized (registryLock) {
+			for (Process process : processes.values()) {
+				Object target = process.target();
+				if (process.state() == ProcessState.PAUSED && target instanceof Mob mob) {
+					mob.setNoAi(false);
+				}
+				process.setState(ProcessState.TERMINATED);
+			}
+			processes.clear();
+			entityProcesses.clear();
+		}
 	}
 
 	private void bindAdapter(Process process, String sourceId, String name) {
@@ -142,7 +187,11 @@ public final class ProcessManager {
 	}
 
 	private int nextPid() {
-		return pidCounter.getAndIncrement();
+		int pid = pidCounter.getAndIncrement();
+		if (pid <= 0) {
+			throw new IllegalStateException("PID 空间耗尽");
+		}
+		return pid;
 	}
 
 	/** 实体细分类别：玩家 / 掉落物实体 / 生物 / 其他实体。 */
