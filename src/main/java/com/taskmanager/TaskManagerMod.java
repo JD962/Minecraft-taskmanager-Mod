@@ -18,6 +18,7 @@ import com.taskmanager.sampling.ResourceSampler;
 import java.util.UUID;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+import net.fabricmc.fabric.api.creativetab.v1.CreativeModeTabEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.loader.api.FabricLoader;
@@ -26,6 +27,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.world.item.CreativeModeTabs;
 import net.minecraft.world.item.Item;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,6 +51,10 @@ public class TaskManagerMod implements ModInitializer {
 	@Override
 	public void onInitialize() {
 		LOGGER.info("[任务管理器] 模组已初始化。");
+
+		// 终端物品加入创造模式「工具与实用物品」栏，作为物品互动的进入渠道
+		CreativeModeTabEvents.modifyOutputEvent(CreativeModeTabs.TOOLS_AND_UTILITIES).register(output ->
+			output.prepend(TASK_MANAGER_TERMINAL));
 
 		// 主动适配：Iris / Sodium 等（可选依赖，isModLoaded 保护，缺失时类不会被加载）
 		registerCompatAdapters();

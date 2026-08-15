@@ -160,31 +160,25 @@ public final class DebugLogger {
 	}
 
 	/** 追踪线程创建/销毁：对比当前 JVM 线程集合与上次，记录差异事件。由采样线程在调试模式下调用。 */
-	public void trackThreadDiff(Set<Thread> threads) {
+	public void trackThreadDiff(Map<Long, String> threads) {
 		if (!debugEnabled || threads == null) {
 			return;
-		}
-		Map<Long, Thread> current = new HashMap<>();
-		for (Thread t : threads) {
-			if (t != null) {
-				current.put(t.threadId(), t);
-			}
 		}
 
 		List<String> events = new ArrayList<>();
 		synchronized (threadDiffLock) {
-			for (Map.Entry<Long, Thread> e : current.entrySet()) {
+			for (Map.Entry<Long, String> e : threads.entrySet()) {
 				if (!lastThreadIds.contains(e.getKey())) {
-					events.add("线程创建: [" + e.getValue().getName() + "] id=" + e.getKey());
+					events.add("线程创建: [" + e.getValue() + "] id=" + e.getKey());
 				}
 			}
 			for (long id : lastThreadIds) {
-				if (!current.containsKey(id)) {
+				if (!threads.containsKey(id)) {
 					events.add("线程销毁: id=" + id);
 				}
 			}
 			lastThreadIds.clear();
-			lastThreadIds.addAll(current.keySet());
+			lastThreadIds.addAll(threads.keySet());
 		}
 		for (String event : events) {
 			record(event);

@@ -40,5 +40,5 @@
 	"taskmanager.settings.close": "Close",
 	"taskmanager.hint": "Click a process to select, expand for thread/method details",
 	"taskmanager.priority": "Priority",
-	"taskmanager.item.task_manager_terminal": "Task Manager Terminal"
+	"item.taskmanager.task_manager_terminal": "Task Manager Terminal"
 }

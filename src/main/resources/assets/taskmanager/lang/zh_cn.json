@@ -40,5 +40,5 @@
 	"taskmanager.settings.close": "关闭",
 	"taskmanager.hint": "点击进程选中，展开线程/方法级详情",
 	"taskmanager.priority": "优先级",
-	"taskmanager.item.task_manager_terminal": "任务管理器终端"
+	"item.taskmanager.task_manager_terminal": "任务管理器终端"
 }

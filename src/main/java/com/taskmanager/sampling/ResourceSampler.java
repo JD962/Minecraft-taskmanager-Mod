@@ -11,7 +11,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * 资源采样调度器：低优先级后台线程定时采样，更新进程的线程列表与资源占用。
@@ -32,7 +31,7 @@ public final class ResourceSampler {
 		"Netty", "网络 IO"
 	);
 
-	private final CpuSampler cpuSampler = new CpuSampler();
+	private final ThreadSampler threadSampler = new ThreadSampler();
 	private final MemorySampler memorySampler = new MemorySampler();
 	private final MethodProfiler methodProfiler = MethodProfiler.getInstance();
 	private final ProcessManager processManager = ProcessManager.getInstance();
@@ -111,15 +110,17 @@ public final class ResourceSampler {
 		}
 	}
 
-	/** 单次采样：线程采集 + CPU/内存/GPU + 更新进程。 */
+	/** 单次采样：线程采集（状态/CPU/分配/堆栈）+ CPU/内存/GPU + 更新进程。 */
 	private void sample() {
-		Set<Thread> allThreads = Thread.getAllStackTraces().keySet();
-		long[] threadIds = allThreads.stream().mapToLong(Thread::threadId).toArray();
+		Map<Long, ThreadSampler.Snapshot> snapshots = threadSampler.sample();
 
 		// 调试模式：追踪线程创建/销毁
-		DebugLogger.getInstance().trackThreadDiff(allThreads);
+		Map<Long, String> idToName = new HashMap<>();
+		for (Map.Entry<Long, ThreadSampler.Snapshot> e : snapshots.entrySet()) {
+			idToName.put(e.getKey(), e.getValue().name());
+		}
+		DebugLogger.getInstance().trackThreadDiff(idToName);
 
-		Map<Long, Double> cpu = cpuSampler.sampleCpuUsage(threadIds);
 		long heap = memorySampler.heapUsed();
 		long nonHeap = memorySampler.nonHeapUsed();
 		// 单次读取 gpuSampler，避免 setGpuSampler(null) 并发替换时多次读取产生 NPE
@@ -127,24 +128,26 @@ public final class ResourceSampler {
 		double gpuUsage = gpu != null && gpu.isAvailable() ? gpu.sampleGpuUsage() : Double.NaN;
 
 		// 归类线程到全局进程（未匹配的归入「其他线程」）
-		Map<String, List<Thread>> processNameToThreads = new HashMap<>();
-		for (Thread t : allThreads) {
-			processNameToThreads.computeIfAbsent(classifyThread(t.getName()), k -> new ArrayList<>()).add(t);
+		Map<String, List<Map.Entry<Long, ThreadSampler.Snapshot>>> processNameToThreads = new HashMap<>();
+		for (Map.Entry<Long, ThreadSampler.Snapshot> e : snapshots.entrySet()) {
+			processNameToThreads.computeIfAbsent(classifyThread(e.getValue().name()), k -> new ArrayList<>()).add(e);
 		}
 
 		for (Process process : processManager.all()) {
 			if (process.category() != ProcessCategory.GLOBAL) {
 				continue;
 			}
-			List<Thread> threads = processNameToThreads.getOrDefault(process.name(), List.of());
+			List<Map.Entry<Long, ThreadSampler.Snapshot>> threads = processNameToThreads.getOrDefault(process.name(), List.of());
 			process.clearThreads();
 			double processCpu = 0;
-			for (Thread thread : threads) {
-				double threadCpu = cpu.getOrDefault(thread.threadId(), Double.NaN);
+			for (Map.Entry<Long, ThreadSampler.Snapshot> e : threads) {
+				ThreadSampler.Snapshot s = e.getValue();
+				double threadCpu = s.cpuPercent();
 				if (!Double.isNaN(threadCpu)) {
 					processCpu += threadCpu;
 				}
-				process.addThread(new ThreadInfo(thread.getName(), thread.threadId(), -1L,
+				process.addThread(new ThreadInfo(s.name(), e.getKey(), s.state(), s.daemon(), s.priority(),
+					s.allocatedBytes(), s.topFrame(),
 					new ResourceUsage(threadCpu, -1L, -1L, Double.NaN)));
 			}
 			// 全局进程内存为整个 JVM 共享，标注到每个全局进程（近似）

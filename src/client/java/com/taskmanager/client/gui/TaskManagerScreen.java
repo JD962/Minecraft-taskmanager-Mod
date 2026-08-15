@@ -104,8 +104,56 @@ public class TaskManagerScreen extends Screen {
 	}
 
 	// ===== 进程列表 =====
-	private void renderProcessList(GuiGraphicsExtractor graphics) {
+	private static final int ROW_H = 14;
+	private static final int KIND_PROCESS = 0;
+	private static final int KIND_THREAD = 1;
+	private static final int KIND_METHOD = 2;
+
+	/** 扁平化可视行：渲染与命中测试共用，保证点击不偏移。 */
+	private record Row(int kind, Process process, ThreadInfo thread, MethodProfiler.MethodNode method, int y) {
+	}
+
+	/** 构建扁平化行布局（含展开的线程与方法级行），每行记录相对 listTop 的 y 偏移。 */
+	private List<Row> buildRows() {
 		List<Process> processes = filteredProcesses();
+		Map<String, List<MethodProfiler.MethodNode>> snapshot = null;
+		List<Row> rows = new ArrayList<>();
+		int y = 0;
+		for (Process p : processes) {
+			rows.add(new Row(KIND_PROCESS, p, null, null, y));
+			y += ROW_H;
+			if (expandedProcesses.contains(p.pid())) {
+				for (ThreadInfo t : p.threads()) {
+					rows.add(new Row(KIND_THREAD, p, t, null, y));
+					y += ROW_H;
+					if (expandedThreads.contains(t.threadId())) {
+						if (snapshot == null) {
+							snapshot = ResourceSampler.getInstance().methodSnapshot();
+						}
+						List<MethodProfiler.MethodNode> methods = snapshot.get(t.threadName());
+						if (methods != null) {
+							int limit = Math.min(6, methods.size());
+							for (int j = 0; j < limit; j++) {
+								rows.add(new Row(KIND_METHOD, p, t, methods.get(j), y));
+								y += ROW_H;
+							}
+						}
+					}
+				}
+			}
+		}
+		return rows;
+	}
+
+	private int listTop() {
+		return 98;
+	}
+
+	private int listBottom() {
+		return this.height - 150;
+	}
+
+	private void renderProcessList(GuiGraphicsExtractor graphics) {
 		int x = 20;
 		int y = 82;
 		graphics.text(this.font, tr("taskmanager.col.pid"), x, y, textMuted());
@@ -114,61 +162,82 @@ public class TaskManagerScreen extends Screen {
 		graphics.text(this.font, tr("taskmanager.col.cpu"), x + 300, y, textMuted());
 		graphics.text(this.font, tr("taskmanager.col.memory"), x + 380, y, textMuted());
 
-		int listTop = y + 16;
-		int maxVisible = Math.max(0, (this.height - listTop - 150) / 14);
-		int row = 0;
-		for (int i = scrollOffset; i < processes.size() && row < maxVisible; i++) {
-			Process p = processes.get(i);
-			int rowY = listTop + row * 14;
-			if (p.pid() == selectedPid) {
-				graphics.fill(15, rowY - 1, this.width - 15, rowY + 13, accent());
+		int top = listTop();
+		int bottom = listBottom();
+		List<Row> rows = buildRows();
+		for (Row row : rows) {
+			int screenY = top + row.y() - scrollOffset;
+			if (screenY + ROW_H <= top || screenY >= bottom) {
+				continue;
 			}
-			boolean expanded = expandedProcesses.contains(p.pid());
-			graphics.text(this.font, (expanded ? "v " : "> ") + p.pid(), x, rowY, text());
-			graphics.text(this.font, p.name(), x + 50, rowY, text());
-			graphics.text(this.font, tr(stateKey(p.state())), x + 220, rowY, stateColor(p));
-			graphics.text(this.font, cpuText(p), x + 300, rowY, heatColor(p.usage().cpuUsage()));
-			graphics.text(this.font, memoryText(p), x + 380, rowY, textMuted());
-			row++;
-			if (expanded) {
-				row = renderThreads(graphics, p, x + 30, rowY + 14, row, maxVisible);
+			switch (row.kind()) {
+				case KIND_PROCESS -> renderProcessRow(graphics, row.process(), x, screenY);
+				case KIND_THREAD -> renderThreadRow(graphics, row.thread(), x + 30, screenY);
+				default -> graphics.text(this.font, String.format("    %s %.1f%%",
+					row.method().methodName(), row.method().cpuRatio()), x + 46, screenY, textMuted());
 			}
 		}
-		if (processes.isEmpty()) {
-			graphics.text(this.font, tr("taskmanager.empty"), x, listTop, textMuted());
+		if (rows.isEmpty()) {
+			graphics.text(this.font, tr("taskmanager.empty"), x, top, textMuted());
 		}
 	}
 
-	private int renderThreads(GuiGraphicsExtractor graphics, Process p, int x, int y, int row, int maxVisible) {
-		Map<String, List<MethodProfiler.MethodNode>> snapshot = null;
-		for (ThreadInfo thread : p.threads()) {
-			if (row >= maxVisible) {
-				return row;
-			}
-			graphics.text(this.font, "- " + thread.threadName(), x, y, textMuted());
-			graphics.text(this.font, cpuText2(thread), x + 230, y, heatColor(thread.usage().cpuUsage()));
-			row++;
-			y += 14;
-			if (expandedThreads.contains(thread.threadId())) {
-				if (snapshot == null) {
-					snapshot = ResourceSampler.getInstance().methodSnapshot();
-				}
-				List<MethodProfiler.MethodNode> methods = snapshot.get(thread.threadName());
-				if (methods != null) {
-					int limit = Math.min(6, methods.size());
-					for (int j = 0; j < limit && row < maxVisible; j++, row++, y += 14) {
-						MethodProfiler.MethodNode node = methods.get(j);
-						graphics.text(this.font, String.format("    %s %.1f%%", node.methodName(), node.cpuRatio()), x + 16, y, textMuted());
-					}
-				}
-			}
+	private void renderProcessRow(GuiGraphicsExtractor graphics, Process p, int x, int screenY) {
+		if (p.pid() == selectedPid) {
+			graphics.fill(15, screenY - 1, this.width - 15, screenY + 13, accent());
 		}
-		return row;
+		boolean expanded = expandedProcesses.contains(p.pid());
+		graphics.text(this.font, (expanded ? "v " : "> ") + p.pid(), x, screenY, text());
+		graphics.text(this.font, p.name(), x + 50, screenY, text());
+		graphics.text(this.font, tr(stateKey(p.state())), x + 220, screenY, stateColor(p));
+		graphics.text(this.font, cpuText(p), x + 300, screenY, heatColor(p.usage().cpuUsage()));
+		graphics.text(this.font, memoryText(p), x + 380, screenY, textMuted());
+	}
+
+	private void renderThreadRow(GuiGraphicsExtractor graphics, ThreadInfo thread, int x, int screenY) {
+		String prefix = thread.daemon() ? "* " : "- ";
+		graphics.text(this.font, prefix + thread.threadName(), x, screenY, textMuted());
+		graphics.text(this.font, stateText(thread.state()), x + 170, screenY, stateColor2(thread.state()));
+		graphics.text(this.font, cpuText2(thread), x + 250, screenY, heatColor(thread.usage().cpuUsage()));
+		graphics.text(this.font, allocText(thread.allocatedBytes()), x + 320, screenY, textMuted());
 	}
 
 	private static String cpuText2(ThreadInfo t) {
 		double cpu = t.usage().cpuUsage();
-		return Double.isNaN(cpu) ? "N/A" : String.format("%.1f%%", cpu);
+		return Double.isNaN(cpu) ? "采样中" : String.format("%.1f%%", cpu);
+	}
+
+	private static String stateText(Thread.State state) {
+		return switch (state) {
+			case RUNNABLE -> "运行中";
+			case BLOCKED -> "阻塞";
+			case WAITING -> "等待";
+			case TIMED_WAITING -> "限时等待";
+			case NEW -> "新建";
+			case TERMINATED -> "已结束";
+		};
+	}
+
+	private static int stateColor2(Thread.State state) {
+		return switch (state) {
+			case RUNNABLE -> 0xFF55CC55;
+			case BLOCKED -> 0xFFCC5555;
+			case WAITING, TIMED_WAITING -> 0xFFDDAA22;
+			default -> 0xFF888888;
+		};
+	}
+
+	private static String allocText(long bytes) {
+		if (bytes < 0) {
+			return "";
+		}
+		if (bytes < 1024 * 1024) {
+			return String.format("%.0f KB", bytes / 1024.0);
+		}
+		if (bytes < 1024L * 1024 * 1024) {
+			return String.format("%.1f MB", bytes / (1024.0 * 1024.0));
+		}
+		return String.format("%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0));
 	}
 
 	// ===== 详情面板 + 操作按钮 =====
@@ -286,23 +355,33 @@ public class TaskManagerScreen extends Screen {
 				return true;
 			}
 		}
-		// 进程列表点击（选中/展开）
-		List<Process> processes = filteredProcesses();
-		int listTop = 98;
-		int listHeight = this.height - listTop - 150;
-		int maxVisible = Math.max(0, listHeight / 14);
-		int idx = scrollOffset + (my - listTop) / 14;
-		if (my >= listTop && my < listTop + maxVisible * 14 && idx >= 0 && idx < processes.size()) {
-			Process p = processes.get(idx);
-			if (selectedPid == p.pid()) {
-				if (expandedProcesses.contains(p.pid())) {
-					expandedProcesses.remove(p.pid());
-				} else {
-					expandedProcesses.add(p.pid());
+		// 进程/线程列表点击（选中/展开）——用与渲染一致的扁平化布局做命中测试，避免偏移
+		List<Row> rows = buildRows();
+		int top = listTop();
+		for (Row row : rows) {
+			int screenY = top + row.y() - scrollOffset;
+			if (my >= screenY && my < screenY + ROW_H) {
+				if (row.kind() == KIND_PROCESS) {
+					Process p = row.process();
+					if (selectedPid == p.pid()) {
+						if (expandedProcesses.contains(p.pid())) {
+							expandedProcesses.remove(p.pid());
+						} else {
+							expandedProcesses.add(p.pid());
+						}
+					}
+					selectedPid = p.pid();
+					return true;
+				} else if (row.kind() == KIND_THREAD) {
+					ThreadInfo t = row.thread();
+					if (expandedThreads.contains(t.threadId())) {
+						expandedThreads.remove(t.threadId());
+					} else {
+						expandedThreads.add(t.threadId());
+					}
+					return true;
 				}
 			}
-			selectedPid = p.pid();
-			return true;
 		}
 		// 操作按钮
 		Process selected = selectedPid < 0 ? null : ProcessManager.getInstance().get(selectedPid);
@@ -417,8 +496,9 @@ public class TaskManagerScreen extends Screen {
 
 	@Override
 	public boolean mouseScrolled(double mx, double my, double scrollX, double scrollY) {
-		int maxScroll = Math.max(0, filteredProcesses().size() - 1);
-		scrollOffset = Math.clamp(scrollOffset - (int) scrollY, 0, maxScroll);
+		int viewportHeight = listBottom() - listTop();
+		int maxScroll = Math.max(0, buildRows().size() * ROW_H - viewportHeight);
+		scrollOffset = Math.clamp(scrollOffset - (int) scrollY * ROW_H, 0, maxScroll);
 		return true;
 	}
 

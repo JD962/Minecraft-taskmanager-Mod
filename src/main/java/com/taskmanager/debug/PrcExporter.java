@@ -409,11 +409,12 @@ public final class PrcExporter {
 				for (ThreadInfo t : threads) {
 					writeString(out, t.threadName());
 					out.writeLong(t.threadId());
-					out.writeLong(t.nativeId());
+					writeString(out, t.state().name());
+					out.writeBoolean(t.daemon());
+					out.writeInt(t.priority());
+					out.writeLong(t.allocatedBytes());
+					writeString(out, t.topFrame() == null ? "" : t.topFrame());
 					out.writeDouble(t.usage().cpuUsage());
-					out.writeLong(t.usage().heapMemory());
-					out.writeLong(t.usage().nonHeapMemory());
-					out.writeDouble(t.usage().gpuUsage());
 				}
 			}
 		}

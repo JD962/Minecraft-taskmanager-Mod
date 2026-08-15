@@ -1,0 +1,6 @@
+{
+  "model": {
+    "type": "minecraft:model",
+    "model": "taskmanager:item/task_manager_terminal"
+  }
+}
