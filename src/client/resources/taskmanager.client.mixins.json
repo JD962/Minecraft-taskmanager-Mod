@@ -3,7 +3,8 @@
 	"package": "com.taskmanager.client.mixin",
 	"compatibilityLevel": "JAVA_25",
 	"client": [
-		"TaskManagerModClientMixin"
+		"TaskManagerModClientMixin",
+		"PauseScreenMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1
