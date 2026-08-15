@@ -54,6 +54,9 @@ public final class MethodProfiler {
 		if (s != null) {
 			s.close();
 		}
+		// 清空采样数据，避免停止后 getSnapshot() 返回过期快照
+		methodCounts.clear();
+		threadTotal.clear();
 	}
 
 	public boolean isRunning() {
@@ -61,6 +64,9 @@ public final class MethodProfiler {
 	}
 
 	private void onSample(RecordedEvent event) {
+		if (!running) {
+			return;
+		}
 		try {
 			RecordedThread thread = event.getThread();
 			if (thread == null) {
