@@ -175,14 +175,18 @@ public class TaskManagerScreen extends Screen {
 		renderActionButton(graphics, "重启", 274, panelTop + 26);
 		renderActionButton(graphics, "优先级-", 20, panelTop + 50);
 		renderActionButton(graphics, "优先级+", 88, panelTop + 50);
-		renderActionButton(graphics, "启动", 156, panelTop + 50);
+		renderActionButton(graphics, "运行新任务", 156, panelTop + 50, 84);
 		renderActionButton(graphics, "日志", 20, panelTop + 74);
 		renderActionButton(graphics, "设置", 78, panelTop + 74);
 	}
 
 	private void renderActionButton(GuiGraphicsExtractor graphics, String label, int x, int y) {
-		graphics.fill(x, y, x + 56, y + 18, button());
-		graphics.centeredText(this.font, label, x + 28, y + 5, text());
+		renderActionButton(graphics, label, x, y, 56);
+	}
+
+	private void renderActionButton(GuiGraphicsExtractor graphics, String label, int x, int y, int w) {
+		graphics.fill(x, y, x + w, y + 18, button());
+		graphics.centeredText(this.font, label, x + w / 2, y + 5, text());
 	}
 
 	private boolean showLogs = false;
@@ -292,7 +296,7 @@ public class TaskManagerScreen extends Screen {
 				OperationEngine.getInstance().setPriority(selected, Math.min(5, selected.priority() + 1), "本地用户");
 				return true;
 			}
-			if (hit(mx, my, 156, panelTop + 50)) {
+			if (hit(mx, my, 156, panelTop + 50, 84)) {
 				OperationEngine.getInstance().start(selected, "本地用户");
 				return true;
 			}
@@ -335,7 +339,11 @@ public class TaskManagerScreen extends Screen {
 	}
 
 	private static boolean hit(int mx, int my, int x, int y) {
-		return mx >= x && mx <= x + 56 && my >= y && my <= y + 18;
+		return hit(mx, my, x, y, 56);
+	}
+
+	private static boolean hit(int mx, int my, int x, int y, int w) {
+		return mx >= x && mx <= x + w && my >= y && my <= y + 18;
 	}
 
 	// ===== 过滤与格式化 =====

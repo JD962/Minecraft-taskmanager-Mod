@@ -1,6 +1,7 @@
 package com.taskmanager;
 
 import com.taskmanager.command.TaskManagerCommand;
+import com.taskmanager.core.ModManager;
 import com.taskmanager.core.ProcessManager;
 import com.taskmanager.item.TaskManagerItem;
 import com.taskmanager.model.ProcessSource;
@@ -46,6 +47,7 @@ public class TaskManagerMod implements ModInitializer {
 			pm.registerGlobal("渲染循环", ProcessSource.game());
 			pm.registerGlobal("网络 IO", ProcessSource.game());
 			pm.registerGlobal("其他线程", ProcessSource.game());
+			ModManager.getInstance().registerAllMods(pm);
 		});
 
 		// 资源采样：接入 GPU 采样器并启动（M4 UI 接入后改为 UI 可见才启用）
