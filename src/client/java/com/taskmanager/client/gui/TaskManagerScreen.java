@@ -4,6 +4,8 @@ import com.taskmanager.api.ProcessState;
 import com.taskmanager.core.OperationEngine;
 import com.taskmanager.core.OperationLog;
 import com.taskmanager.core.ProcessManager;
+import com.taskmanager.debug.DebugLogger;
+import com.taskmanager.debug.PrcExporter;
 import com.taskmanager.model.Process;
 import com.taskmanager.model.ProcessCategory;
 import com.taskmanager.model.ProcessSide;
@@ -206,9 +208,17 @@ public class TaskManagerScreen extends Screen {
 		List<OperationLog> logs = OperationEngine.getInstance().logs();
 		int y = logTop + 24;
 		int count = 0;
-		for (int i = logs.size() - 1; i >= 0 && count < 8; i--, count++, y += 12) {
+		for (int i = logs.size() - 1; i >= 0 && count < 6; i--, count++, y += 12) {
 			OperationLog log = logs.get(i);
 			graphics.text(this.font, String.format("[%s] %s %s -> %s", time(log.timestamp()), log.action(), log.target(), log.result()), 24, y, textMuted());
+		}
+		// 调试模式：追加事件流（线程创建/销毁、导出状态等）
+		if (DebugLogger.getInstance().isEnabled()) {
+			List<String> debug = DebugLogger.getInstance().buffered();
+			y += 6;
+			for (int i = debug.size() - 1; i >= 0 && y < panelTop - 10; i--, y += 12) {
+				graphics.text(this.font, debug.get(i), 24, y, textMuted());
+			}
 		}
 	}
 
@@ -219,15 +229,32 @@ public class TaskManagerScreen extends Screen {
 
 	// ===== 设置 =====
 	private void renderSettings(GuiGraphicsExtractor graphics) {
-		int cx = this.width / 2 - 100;
-		int cy = this.height / 2 - 60;
-		graphics.fill(cx, cy, cx + 200, cy + 120, panel());
-		graphics.centeredText(this.font, tr("taskmanager.settings.title"), cx + 100, cy + 6, text());
+		int cx = this.width / 2 - 120;
+		int cy = this.height / 2 - 100;
+		graphics.fill(cx, cy, cx + 240, cy + 200, panel());
+		graphics.centeredText(this.font, tr("taskmanager.settings.title"), cx + 120, cy + 6, text());
 		graphics.text(this.font, tr("taskmanager.settings.interval").formatted(ResourceSampler.getInstance().intervalMs()), cx + 10, cy + 28, text());
 		renderActionButton(graphics, "0.5s", cx + 10, cy + 44);
 		renderActionButton(graphics, "1s", cx + 70, cy + 44);
 		renderActionButton(graphics, "5s", cx + 130, cy + 44);
-		renderActionButton(graphics, tr("taskmanager.settings.close"), cx + 72, cy + 90);
+
+		// 调试模式开关
+		graphics.text(this.font, tr("taskmanager.settings.debug"), cx + 10, cy + 70, text());
+		boolean debugOn = DebugLogger.getInstance().isEnabled();
+		renderActionButton(graphics, tr(debugOn ? "taskmanager.settings.debug_off" : "taskmanager.settings.debug_on"), cx + 130, cy + 70, 100);
+
+		// 进程表导出
+		graphics.text(this.font, tr("taskmanager.settings.export"), cx + 10, cy + 96, text());
+		renderActionButton(graphics, tr("taskmanager.settings.export_once"), cx + 10, cy + 118);
+		renderActionButton(graphics, tr(PrcExporter.getInstance().isRealtimeRunning()
+			? "taskmanager.settings.export_stop" : "taskmanager.settings.export_realtime"), cx + 70, cy + 118, 100);
+		renderActionButton(graphics, tr("taskmanager.settings.export_verify"), cx + 174, cy + 118, 56);
+
+		// 导出状态
+		PrcExporter ex = PrcExporter.getInstance();
+		graphics.text(this.font, "写 " + ex.writeCount() + " | " + ex.lastValidation(), cx + 10, cy + 144, textMuted());
+
+		renderActionButton(graphics, tr("taskmanager.settings.close"), cx + 92, cy + 172);
 	}
 
 	// ===== 交互 =====
@@ -313,8 +340,8 @@ public class TaskManagerScreen extends Screen {
 			}
 		}
 		if (showSettings) {
-			int cx = this.width / 2 - 100;
-			int cy = this.height / 2 - 60;
+			int cx = this.width / 2 - 120;
+			int cy = this.height / 2 - 100;
 			if (hit(mx, my, cx + 10, cy + 44)) {
 				ResourceSampler.getInstance().setInterval(500);
 				return true;
@@ -327,12 +354,55 @@ public class TaskManagerScreen extends Screen {
 				ResourceSampler.getInstance().setInterval(5000);
 				return true;
 			}
-			if (hit(mx, my, cx + 72, cy + 90)) {
+			if (hit(mx, my, cx + 130, cy + 70, 100)) {
+				DebugLogger debug = DebugLogger.getInstance();
+				if (debug.isEnabled()) {
+					debug.disable();
+				} else {
+					debug.enable();
+				}
+				return true;
+			}
+			if (hit(mx, my, cx + 10, cy + 118)) {
+				exportOnce();
+				return true;
+			}
+			if (hit(mx, my, cx + 70, cy + 118, 100)) {
+				toggleRealtime();
+				return true;
+			}
+			if (hit(mx, my, cx + 174, cy + 118, 56)) {
+				exportVerify();
+				return true;
+			}
+			if (hit(mx, my, cx + 92, cy + 172)) {
 				showSettings = false;
 				return true;
 			}
 		}
 		return super.mouseClicked(event, doubleClick);
+	}
+
+	private void exportOnce() {
+		java.nio.file.Path file = PrcExporter.defaultDirectory()
+			.resolve(PrcExporter.timestampedName("进程表", ".prc"));
+		PrcExporter.getInstance().exportOnce(file);
+	}
+
+	private void toggleRealtime() {
+		PrcExporter ex = PrcExporter.getInstance();
+		if (ex.isRealtimeRunning()) {
+			ex.stopRealtime();
+		} else {
+			ex.startRealtime(1000);
+		}
+	}
+
+	private void exportVerify() {
+		java.nio.file.Path file = PrcExporter.latestPrcFile();
+		if (file != null) {
+			PrcExporter.getInstance().read(file);
+		}
 	}
 
 	@Override
