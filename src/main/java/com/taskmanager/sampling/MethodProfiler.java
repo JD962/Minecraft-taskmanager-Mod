@@ -16,17 +16,39 @@ import jdk.jfr.consumer.RecordedThread;
 import jdk.jfr.consumer.RecordingStream;
 
 /**
- * 方法级 CPU 采样：基于 JFR 的 jdk.ExecutionSample 事件，聚合每个线程内各方法的命中次数，
- * 得到「线程 → 方法 → CPU 占比」。纯 JDK 实现，无 JNI，开销极低。
+ * 方法级 CPU 采样：基于 JFR 的 jdk.ExecutionSample 事件，聚合每个线程内各方法的独占 CPU 占比。
+ * 纯 JDK 实现，无 JNI，开销极低。
+ * <p>
+ * 采用「独占式」统计：每个样本只统计栈顶的 Java 方法，得到「线程 → 方法 → CPU 占比」。
+ * 采样周期跟随 UI 刷新频率（见 {@link #periodForInterval}），且仅在 UI 可见时由 UI 调用
+ * {@link #start}/{@link #stop} 启停，UI 关闭即停止捕获，不影响 /taskmgr 命令。
  */
 public final class MethodProfiler {
+	private static final MethodProfiler INSTANCE = new MethodProfiler();
+
+	/** 方法级采样周期下限（保证方法级数据仍有统计意义）。 */
+	private static final long MIN_PERIOD_MS = 10;
+	/** 方法级采样周期上限（刷新频率极慢时的最低采样开销）。 */
+	private static final long MAX_PERIOD_MS = 100;
+
 	private final ConcurrentMap<String, ConcurrentMap<String, Long>> methodCounts = new ConcurrentHashMap<>();
 	private final ConcurrentMap<String, Long> threadTotal = new ConcurrentHashMap<>();
 	private volatile RecordingStream stream;
 	private volatile boolean running;
+	private volatile long periodMs = MIN_PERIOD_MS;
+	/** 采样代际：区分新旧 stream，旧 stream 的在途回调据此失效。 */
+	private volatile long generation = 0L;
 
-	/** 方法节点：方法名 + 命中次数 + 该线程内 CPU 占比（百分比）。 */
-	public record MethodNode(String methodName, long hitCount, double cpuRatio) {
+	private MethodProfiler() {
+	}
+
+	public static MethodProfiler getInstance() {
+		return INSTANCE;
+	}
+
+	/** 根据 UI 刷新频率（采样间隔）映射方法级采样周期：刷新越慢采样越省，但保持 10~100ms 精度。 */
+	public static long periodForInterval(long intervalMs) {
+		return Math.clamp(intervalMs / 100, MIN_PERIOD_MS, MAX_PERIOD_MS);
 	}
 
 	/** 启动采样。 */
@@ -34,13 +56,16 @@ public final class MethodProfiler {
 		if (running) {
 			return;
 		}
+		long p = Math.clamp(periodMs, MIN_PERIOD_MS, MAX_PERIOD_MS);
 		methodCounts.clear();
 		threadTotal.clear();
-		RecordingStream recordingStream = new RecordingStream();
-		recordingStream.enable("jdk.ExecutionSample").withPeriod(Duration.ofMillis(periodMs));
-		recordingStream.onEvent("jdk.ExecutionSample", this::onSample);
-		recordingStream.startAsync();
-		this.stream = recordingStream;
+		long gen = ++generation;
+		RecordingStream next = createStream(p, gen);
+		if (next == null) {
+			return;
+		}
+		this.stream = next;
+		this.periodMs = p;
 		this.running = true;
 	}
 
@@ -49,6 +74,7 @@ public final class MethodProfiler {
 			return;
 		}
 		running = false;
+		generation++;
 		RecordingStream s = stream;
 		stream = null;
 		if (s != null) {
@@ -59,12 +85,50 @@ public final class MethodProfiler {
 		threadTotal.clear();
 	}
 
+	/** 运行中调整采样周期：重启 JFR stream（新周期）；周期变化导致样本权重不一致，故清空累积数据。 */
+	public synchronized void setPeriod(long periodMs) {
+		if (!running) {
+			return;
+		}
+		long p = Math.clamp(periodMs, MIN_PERIOD_MS, MAX_PERIOD_MS);
+		if (this.periodMs == p) {
+			return;
+		}
+		long gen = ++generation;
+		RecordingStream next = createStream(p, gen);
+		if (next == null) {
+			return;
+		}
+		RecordingStream old = stream;
+		this.stream = next;
+		this.periodMs = p;
+		if (old != null) {
+			old.close();
+		}
+		methodCounts.clear();
+		threadTotal.clear();
+	}
+
 	public boolean isRunning() {
 		return running;
 	}
 
-	private void onSample(RecordedEvent event) {
-		if (!running) {
+	/** 创建并启动 stream；启动失败时关闭并返回 null（避免 JFR 资源泄漏）。 */
+	private RecordingStream createStream(long periodMs, long gen) {
+		RecordingStream s = new RecordingStream();
+		try {
+			s.enable("jdk.ExecutionSample").withPeriod(Duration.ofMillis(periodMs));
+			s.onEvent("jdk.ExecutionSample", event -> onSample(event, gen));
+			s.startAsync();
+			return s;
+		} catch (RuntimeException | Error e) {
+			s.close();
+			return null;
+		}
+	}
+
+	private void onSample(RecordedEvent event, long gen) {
+		if (!running || gen != generation) {
 			return;
 		}
 		try {
@@ -73,21 +137,30 @@ public final class MethodProfiler {
 				return;
 			}
 			String threadName = thread.getJavaName();
+			if (threadName == null) {
+				threadName = "thread-" + thread.getJavaThreadId();
+			}
 			RecordedStackTrace stackTrace = event.getStackTrace();
 			if (stackTrace == null) {
 				return;
 			}
 			List<RecordedFrame> frames = stackTrace.getFrames();
-			if (frames.isEmpty()) {
+			// 独占式 CPU 占比：只统计栈顶的 Java 方法
+			RecordedFrame top = null;
+			for (RecordedFrame frame : frames) {
+				if (frame.isJavaFrame()) {
+					top = frame;
+					break;
+				}
+			}
+			if (top == null) {
 				return;
 			}
+			RecordedMethod method = top.getMethod();
+			String key = method.getType().getName() + "." + method.getName();
 			ConcurrentMap<String, Long> counts = methodCounts.computeIfAbsent(threadName, k -> new ConcurrentHashMap<>());
-			for (RecordedFrame frame : frames) {
-				RecordedMethod method = frame.getMethod();
-				String key = method.getType().getName() + "." + method.getName();
-				counts.merge(key, 1L, Long::sum);
-			}
-			threadTotal.merge(threadName, (long) frames.size(), Long::sum);
+			counts.merge(key, 1L, Long::sum);
+			threadTotal.merge(threadName, 1L, Long::sum);
 		} catch (Exception ignored) {
 			// 采样异常不影响整体
 		}
@@ -112,5 +185,9 @@ public final class MethodProfiler {
 			snapshot.put(threadName, nodes);
 		}
 		return snapshot;
+	}
+
+	/** 方法节点：方法名 + 命中次数 + 该线程内 CPU 占比（百分比）。 */
+	public record MethodNode(String methodName, long hitCount, double cpuRatio) {
 	}
 }

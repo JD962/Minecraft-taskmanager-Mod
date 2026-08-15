@@ -1,6 +1,7 @@
 package com.taskmanager;
 
 import com.taskmanager.command.TaskManagerCommand;
+import com.taskmanager.compat.SodiumAdapter;
 import com.taskmanager.core.ModManager;
 import com.taskmanager.core.ProcessManager;
 import com.taskmanager.debug.DebugLogger;
@@ -8,6 +9,7 @@ import com.taskmanager.debug.PrcExporter;
 import com.taskmanager.item.TaskManagerItem;
 import com.taskmanager.model.ProcessSide;
 import com.taskmanager.model.ProcessSource;
+import com.taskmanager.registry.ProcessAdapterRegistry;
 import com.taskmanager.remote.TaskManagerProcessDataProvider;
 import com.taskmanager.remote.TaskManagerServer;
 import com.taskmanager.remote.TaskManagerServerConfig;
@@ -18,6 +20,7 @@ import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
@@ -46,6 +49,9 @@ public class TaskManagerMod implements ModInitializer {
 	@Override
 	public void onInitialize() {
 		LOGGER.info("[任务管理器] 模组已初始化。");
+
+		// 主动适配：Iris / Sodium 等（可选依赖，isModLoaded 保护，缺失时类不会被加载）
+		registerCompatAdapters();
 
 		// 实体进程：随实体加载/卸载动态创建/销毁
 		ServerEntityEvents.ENTITY_LOAD.register((entity, world) ->
@@ -76,7 +82,7 @@ public class TaskManagerMod implements ModInitializer {
 		// 远程管理服务端：启动/停止
 		TaskManagerServer remoteServer = new TaskManagerServer(
 			TaskManagerServerConfig.localhost(REMOTE_TOKEN), TaskManagerProcessDataProvider.getInstance());
-		LOGGER.info("[任务管理器] 远程管理服务端 token: {}", REMOTE_TOKEN);
+		LOGGER.info("[任务管理器] 远程管理服务端 token 指纹: {}", Integer.toHexString(REMOTE_TOKEN.hashCode()));
 		ServerLifecycleEvents.SERVER_STARTED.register(server -> {
 			try {
 				remoteServer.start();
@@ -113,6 +119,18 @@ public class TaskManagerMod implements ModInitializer {
 			TaskManagerCommand.register(dispatcher));
 
 		LOGGER.info("[任务管理器] 事件与命令注册完成。");
+	}
+
+	/** 注册对 Sodium 等常用模组的主动适配（可选依赖，缺失时跳过，避免触发类加载）。 */
+	private static void registerCompatAdapters() {
+		if (FabricLoader.getInstance().isModLoaded("sodium")) {
+			try {
+				ProcessAdapterRegistry.getInstance().register("sodium", new SodiumAdapter());
+				LOGGER.info("[任务管理器] 已注册 Sodium 主动适配（渲染核心保护）。");
+			} catch (LinkageError e) {
+				LOGGER.warn("[任务管理器] Sodium API 不兼容，跳过主动适配", e);
+			}
+		}
 	}
 
 	private static void safely(String what, Runnable action) {

@@ -34,7 +34,7 @@ public final class ResourceSampler {
 
 	private final CpuSampler cpuSampler = new CpuSampler();
 	private final MemorySampler memorySampler = new MemorySampler();
-	private final MethodProfiler methodProfiler = new MethodProfiler();
+	private final MethodProfiler methodProfiler = MethodProfiler.getInstance();
 	private final ProcessManager processManager = ProcessManager.getInstance();
 	private final com.sun.management.OperatingSystemMXBean osBean =
 		(com.sun.management.OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
@@ -42,7 +42,7 @@ public final class ResourceSampler {
 	private volatile GpuSampler gpuSampler = null;
 	private volatile long intervalMs = DEFAULT_INTERVAL_MS;
 	private volatile boolean running = false;
-	private Thread worker;
+	private volatile Thread worker;
 
 	private ResourceSampler() {
 	}
@@ -57,6 +57,8 @@ public final class ResourceSampler {
 
 	public void setInterval(long ms) {
 		this.intervalMs = Math.clamp(ms, MIN_INTERVAL_MS, MAX_INTERVAL_MS);
+		// 方法级采样周期跟随刷新频率（若方法级采样正在运行）
+		methodProfiler.setPeriod(MethodProfiler.periodForInterval(this.intervalMs));
 	}
 
 	public long intervalMs() {
@@ -68,7 +70,6 @@ public final class ResourceSampler {
 			return;
 		}
 		running = true;
-		methodProfiler.start(10);
 		worker = new Thread(this::runLoop, "TaskManager-Sampler");
 		worker.setDaemon(true);
 		worker.setPriority(Thread.MIN_PRIORITY);
@@ -80,7 +81,6 @@ public final class ResourceSampler {
 			return;
 		}
 		running = false;
-		methodProfiler.stop();
 		Thread t = worker;
 		worker = null;
 		if (t != null) {
@@ -95,7 +95,8 @@ public final class ResourceSampler {
 	}
 
 	private void runLoop() {
-		while (running) {
+		// 校验 worker 身份，防止 stop 超时后旧 worker 与重启的新 worker 同时采样
+		while (running && Thread.currentThread() == worker) {
 			try {
 				sample();
 			} catch (Exception e) {
@@ -121,7 +122,9 @@ public final class ResourceSampler {
 		Map<Long, Double> cpu = cpuSampler.sampleCpuUsage(threadIds);
 		long heap = memorySampler.heapUsed();
 		long nonHeap = memorySampler.nonHeapUsed();
-		double gpu = gpuSampler != null && gpuSampler.isAvailable() ? gpuSampler.sampleGpuUsage() : Double.NaN;
+		// 单次读取 gpuSampler，避免 setGpuSampler(null) 并发替换时多次读取产生 NPE
+		GpuSampler gpu = gpuSampler;
+		double gpuUsage = gpu != null && gpu.isAvailable() ? gpu.sampleGpuUsage() : Double.NaN;
 
 		// 归类线程到全局进程（未匹配的归入「其他线程」）
 		Map<String, List<Thread>> processNameToThreads = new HashMap<>();
@@ -145,7 +148,7 @@ public final class ResourceSampler {
 					new ResourceUsage(threadCpu, -1L, -1L, Double.NaN)));
 			}
 			// 全局进程内存为整个 JVM 共享，标注到每个全局进程（近似）
-			process.setUsage(new ResourceUsage(processCpu, heap, nonHeap, gpu));
+			process.setUsage(new ResourceUsage(processCpu, heap, nonHeap, gpuUsage));
 		}
 	}
 
@@ -159,7 +162,7 @@ public final class ResourceSampler {
 		return "其他线程";
 	}
 
-	/** 进程级 CPU 负载（0~1，不可用返回 NaN）。 */
+	/** 进程级 CPU 负载（百分比 0~100，不可用返回 NaN）。 */
 	public double processCpuLoad() {
 		double load = osBean.getProcessCpuLoad();
 		return load < 0 ? Double.NaN : load * 100.0;

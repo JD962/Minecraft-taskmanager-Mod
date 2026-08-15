@@ -53,6 +53,16 @@ public class TaskManagerScreen extends Screen {
 		this.searchBox = new EditBox(this.font, 20, 58, 240, 16, Component.literal("搜索"));
 		this.searchBox.setValue("");
 		this.addRenderableWidget(this.searchBox);
+		// 打开 UI 时启动方法级采样（周期跟随刷新频率），关闭 UI 时停止
+		MethodProfiler.getInstance().start(
+			MethodProfiler.periodForInterval(ResourceSampler.getInstance().intervalMs()));
+	}
+
+	@Override
+	public void removed() {
+		// 关闭 UI 时停止方法级采样，不影响 /taskmgr 命令
+		MethodProfiler.getInstance().stop();
+		super.removed();
 	}
 
 	@Override

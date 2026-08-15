@@ -12,6 +12,10 @@ repositories {
 	// Loom adds the essential maven repositories to download Minecraft and libraries from automatically.
 	// See https://docs.gradle.org/current/userguide/declaring_repositories.html
 	// for more information about repositories.
+	maven {
+		name = "Modrinth"
+		url = "https://api.modrinth.com/maven"
+	}
 }
 
 loom {
@@ -38,6 +42,11 @@ dependencies {
 
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	// 主动适配的可选依赖（编译期可用、运行期可选，不打包进最终 jar）
+	// 注意：Loom 1.17 为 no-remap 模式，用标准 compileOnly；版本号用 Modrinth version id 避免 "+" 被当作动态版本。
+	compileOnly "maven.modrinth:iris:oaD6KQls"          // Iris 1.11.2+26.2-fabric
+	compileOnly "maven.modrinth:sodium:a9YZH3ip"        // Sodium mc26.2-0.9.2-alpha.4-fabric
 }
 
 processResources {
