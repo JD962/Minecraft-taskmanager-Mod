@@ -19,11 +19,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 任务管理器主界面：独立自定义 UI（Blaze3D 抽象渲染）。
@@ -32,6 +35,7 @@ import net.minecraft.network.chat.Component;
  * 热力色、操作按钮、操作日志、设置页。
  */
 public class TaskManagerScreen extends Screen {
+	private static final Logger LOGGER = LoggerFactory.getLogger("TaskManager");
 	private static final int TAB_CLIENT = 0;
 	private static final int TAB_SERVER = 1;
 	private static final int TAB_ALL = 2;
@@ -60,6 +64,8 @@ public class TaskManagerScreen extends Screen {
 
 	@Override
 	protected void init() {
+		LOGGER.info("[TM] init size={}x{} activeScreenIsThis={}", this.width, this.height,
+			Minecraft.getInstance().gui.screen() == this);
 		this.searchBox = new EditBox(this.font, 20, 58, 240, 16, Component.literal("搜索"));
 		this.searchBox.setValue("");
 		this.addRenderableWidget(this.searchBox);
@@ -246,8 +252,13 @@ public class TaskManagerScreen extends Screen {
 		return 98;
 	}
 
+	/** 底部面板顶部坐标（= 列表底界）。小高度下至少给列表留一行空间，避免视口为负。 */
+	private int panelTop() {
+		return Math.max(this.listTop() + ROW_H, this.height - 150);
+	}
+
 	private int listBottom() {
-		return this.height - 150;
+		return panelTop();
 	}
 
 	/** 方法级快照（带 1s 缓存，避免渲染循环每帧重建大 Map）。 */
@@ -365,7 +376,7 @@ public class TaskManagerScreen extends Screen {
 	private void renderDetailPanel(GuiGraphicsExtractor graphics) {
 		Process selected = selectedPid < 0 ? null : ProcessManager.getInstance().get(selectedPid);
 		ThreadInfo selectedThread = selectedThreadId < 0 ? null : findThread(selectedThreadId);
-		int panelTop = this.height - 150;
+		int panelTop = panelTop();
 		graphics.fill(0, panelTop, this.width, this.height, panel());
 		if (selectedThread != null) {
 			renderThreadDetail(graphics, selectedThread, panelTop);
@@ -469,7 +480,7 @@ public class TaskManagerScreen extends Screen {
 		if (!showLogs) {
 			return;
 		}
-		int panelTop = this.height - 150;
+		int panelTop = panelTop();
 		int logTop = this.height / 3;
 		graphics.fill(20, logTop, this.width - 20, panelTop - 4, bg());
 		tmText(graphics, tr("taskmanager.logs.title"), 24, logTop + 6, text());
@@ -528,10 +539,12 @@ public class TaskManagerScreen extends Screen {
 	// ===== 交互 =====
 	@Override
 	public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
-		int mx = (int) event.x();
-		int my = (int) event.y();
+		double mx = event.x();
+		double my = event.y();
+		LOGGER.info("[TM] click ({}, {}) size={}x{} settings={} tab={} scroll={} btn={}",
+			mx, my, this.width, this.height, showSettings, activeTab, scrollOffset, event.button());
 		// 关闭按钮（右上角 X）
-		if (mx >= this.width - 24 && mx <= this.width - 4 && my >= 5 && my <= 21) {
+		if (mx >= this.width - 24 && mx < this.width - 4 && my >= 5 && my < 21) {
 			this.onClose();
 			return true;
 		}
@@ -583,14 +596,14 @@ public class TaskManagerScreen extends Screen {
 			return true;
 		}
 		// 主题按钮
-		if (mx >= this.width - 76 && mx <= this.width - 28 && my >= 5 && my <= 21) {
+		if (mx >= this.width - 76 && mx < this.width - 28 && my >= 5 && my < 21) {
 			darkMode = !darkMode;
 			return true;
 		}
 		// 页签
 		for (int i = 0; i < TABS.length; i++) {
 			int x = 20 + i * 76;
-			if (mx >= x && mx <= x + 72 && my >= 34 && my <= 54) {
+			if (mx >= x && mx < x + 72 && my >= 34 && my < 54) {
 				activeTab = i;
 				scrollOffset = 0;
 				return true;
@@ -600,8 +613,8 @@ public class TaskManagerScreen extends Screen {
 		List<Row> rows = buildRows();
 		int top = listTop();
 		int bottom = listBottom();
-		// 鼠标必须在列表区域内（底部面板/按钮在 bottom 以下）
-		if (my < bottom) {
+		// 鼠标必须在列表区域内（顶部页签以上、底部面板以下）
+		if (my >= top && my < bottom) {
 			for (Row row : rows) {
 				int screenY = top + row.y() - scrollOffset;
 				if (screenY >= bottom) {
@@ -668,7 +681,7 @@ public class TaskManagerScreen extends Screen {
 		}
 		// 日志/设置按钮（不依赖选中进程，始终可用）
 		{
-			int panelTop = this.height - 150;
+			int panelTop = panelTop();
 			if (hit(mx, my, 20, panelTop + 74)) {
 				showLogs = !showLogs;
 				return true;
@@ -680,7 +693,7 @@ public class TaskManagerScreen extends Screen {
 		}
 		// 线程操作按钮（选中线程时，优先级调整可用）
 		if (selectedThreadId >= 0) {
-			int panelTop = this.height - 150;
+			int panelTop = panelTop();
 			if (hit(mx, my, 20, panelTop + 44)) {
 				adjustThreadPriority(selectedThreadId, -1);
 				return true;
@@ -693,7 +706,7 @@ public class TaskManagerScreen extends Screen {
 		// 进程操作按钮（需选中进程）
 		Process selected = selectedPid < 0 ? null : ProcessManager.getInstance().get(selectedPid);
 		if (selected != null) {
-			int panelTop = this.height - 150;
+			int panelTop = panelTop();
 			if (hit(mx, my, 20, panelTop + 26)) {
 				OperationEngine.getInstance().pause(selected, "本地用户");
 				return true;
@@ -754,18 +767,19 @@ public class TaskManagerScreen extends Screen {
 
 	@Override
 	public boolean mouseScrolled(double mx, double my, double scrollX, double scrollY) {
+		LOGGER.info("[TM] scroll ({}, {}) dy={}", mx, my, scrollY);
 		int viewportHeight = listBottom() - listTop();
 		int maxScroll = Math.max(0, buildRows().size() * ROW_H - viewportHeight);
 		scrollOffset = Math.clamp(scrollOffset - (int) scrollY * ROW_H, 0, maxScroll);
 		return true;
 	}
 
-	private static boolean hit(int mx, int my, int x, int y) {
+	private static boolean hit(double mx, double my, int x, int y) {
 		return hit(mx, my, x, y, 56);
 	}
 
-	private static boolean hit(int mx, int my, int x, int y, int w) {
-		return mx >= x && mx <= x + w && my >= y && my <= y + 18;
+	private static boolean hit(double mx, double my, int x, int y, int w) {
+		return mx >= x && mx < x + w && my >= y && my < y + 18;
 	}
 
 	// ===== 无阴影文字（自定义纯色面板下，关闭 Minecraft 默认阴影，避免亮色主题重影） =====
