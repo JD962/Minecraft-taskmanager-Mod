@@ -9,6 +9,7 @@ import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.EventLoopGroup;
+import io.netty.channel.WriteBufferWaterMark;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.group.ChannelMatcher;
 import io.netty.channel.group.DefaultChannelGroup;
@@ -23,9 +24,10 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
@@ -44,7 +46,7 @@ public final class TaskManagerServer {
 	private final ChannelGroup clients = new DefaultChannelGroup("tm-clients", GlobalEventExecutor.INSTANCE);
 
 	private static final ChannelMatcher AUTHED_ONLY =
-		ch -> Boolean.TRUE.equals(ch.attr(ServerHandler.AUTHED).get());
+		ch -> Boolean.TRUE.equals(ch.attr(ServerHandler.AUTHED).get()) && ch.isWritable();
 
 	private EventLoopGroup bossGroup;
 	private EventLoopGroup workerGroup;
@@ -72,7 +74,13 @@ public final class TaskManagerServer {
 			}
 			bossGroup = new NioEventLoopGroup(1, daemonFactory("tm-boss"));
 			workerGroup = new NioEventLoopGroup(2, daemonFactory("tm-worker"));
-			blockingPool = Executors.newFixedThreadPool(config.blockingThreads(), daemonFactory("tm-task"));
+			// 有界任务队列，防止已认证客户端灌请求导致无界堆积
+			blockingPool = new ThreadPoolExecutor(
+				config.blockingThreads(), config.blockingThreads(),
+				0L, TimeUnit.MILLISECONDS,
+				new ArrayBlockingQueue<>(256),
+				daemonFactory("tm-task"),
+				new ThreadPoolExecutor.AbortPolicy());
 			try {
 				ServerBootstrap b = new ServerBootstrap()
 					.group(bossGroup, workerGroup)
@@ -81,6 +89,8 @@ public final class TaskManagerServer {
 					.option(ChannelOption.SO_REUSEADDR, true)
 					.childOption(ChannelOption.TCP_NODELAY, true)
 					.childOption(ChannelOption.SO_KEEPALIVE, true)
+					.childOption(ChannelOption.WRITE_BUFFER_WATER_MARK,
+						new WriteBufferWaterMark(32 * 1024, 128 * 1024))
 					.childHandler(new ChannelInitializer<SocketChannel>() {
 						@Override
 						protected void initChannel(SocketChannel ch) {
@@ -134,7 +144,9 @@ public final class TaskManagerServer {
 				return;
 			}
 			running = false;
-			long deadlineMs = unit.toMillis(timeout);
+			long deadlineMs = Math.max(100L, unit.toMillis(timeout));
+			// shutdownGracefully 要求 timeout >= quietPeriod，夹紧参数避免 IllegalArgumentException
+			long quiet = Math.min(100L, deadlineMs);
 			try {
 				if (serverChannel != null) {
 					serverChannel.close().await(deadlineMs, TimeUnit.MILLISECONDS);
@@ -163,9 +175,9 @@ public final class TaskManagerServer {
 				blockingPool = null;
 			}
 			io.netty.util.concurrent.Future<?> wf = workerGroup == null ? null
-				: workerGroup.shutdownGracefully(100, deadlineMs, TimeUnit.MILLISECONDS);
+				: workerGroup.shutdownGracefully(quiet, deadlineMs, TimeUnit.MILLISECONDS);
 			io.netty.util.concurrent.Future<?> bf = bossGroup == null ? null
-				: bossGroup.shutdownGracefully(100, deadlineMs, TimeUnit.MILLISECONDS);
+				: bossGroup.shutdownGracefully(quiet, deadlineMs, TimeUnit.MILLISECONDS);
 			try {
 				if (wf != null) wf.await(deadlineMs, TimeUnit.MILLISECONDS);
 				if (bf != null) bf.await(deadlineMs, TimeUnit.MILLISECONDS);

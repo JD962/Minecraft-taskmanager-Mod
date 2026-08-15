@@ -43,24 +43,30 @@ public final class ModManager {
 	public void registerAllMods(ProcessManager processManager) {
 		for (ModContainer mod : FabricLoader.getInstance().getAllMods()) {
 			String id = mod.getMetadata().getId();
-			if (CORE_IDS.contains(id)) {
+			if (isCoreOrLibrary(mod)) {
 				continue;
 			}
 			String name = mod.getMetadata().getName();
 			Process process = processManager.registerGlobal(name, ProcessSource.mod(id), ProcessSide.SERVER);
+			if (process == null) {
+				continue;
+			}
 			modProcesses.put(id, process);
 		}
 	}
 
 	/** 禁用模组（逻辑禁用：标记 + 暂停对应进程）。 */
 	public boolean disable(String modId, String operator) {
-		if (disabledMods.contains(modId)) {
+		if (modId == null || !modProcesses.containsKey(modId)) {
 			return false;
 		}
-		disabledMods.add(modId);
+		if (!disabledMods.add(modId)) {
+			return false;
+		}
 		Process process = modProcesses.get(modId);
-		if (process != null) {
-			OperationEngine.getInstance().pause(process, operator);
+		if (process != null && !OperationEngine.getInstance().pause(process, operator)) {
+			disabledMods.remove(modId);
+			return false;
 		}
 		return true;
 	}
@@ -81,13 +87,19 @@ public final class ModManager {
 		return disabledMods.contains(modId);
 	}
 
+	/** 服务器停止时清理，避免跨世界的静态强引用与禁用状态残留。 */
+	public void clear() {
+		modProcesses.clear();
+		disabledMods.clear();
+	}
+
 	/** 列出所有模组信息（含作者与状态）。 */
 	public List<ModInfo> listMods() {
 		Collection<ModContainer> mods = FabricLoader.getInstance().getAllMods();
 		List<ModInfo> result = new ArrayList<>();
 		for (ModContainer mod : mods) {
 			String id = mod.getMetadata().getId();
-			if (CORE_IDS.contains(id)) {
+			if (isCoreOrLibrary(mod)) {
 				continue;
 			}
 			String name = mod.getMetadata().getName();
@@ -96,6 +108,15 @@ public final class ModManager {
 		}
 		result.sort((a, b) -> a.name().compareToIgnoreCase(b.name()));
 		return result;
+	}
+
+	/** 判断是否为核心组件或 jar-in-jar 库（非用户模组）。 */
+	private static boolean isCoreOrLibrary(ModContainer mod) {
+		if (mod.getContainingMod().isPresent()) {
+			return true;
+		}
+		String id = mod.getMetadata().getId();
+		return CORE_IDS.contains(id) || id.startsWith("fabric-");
 	}
 
 	private static String firstAuthor(Collection<Person> authors) {

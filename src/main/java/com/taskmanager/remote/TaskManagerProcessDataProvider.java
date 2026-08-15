@@ -21,17 +21,27 @@ public final class TaskManagerProcessDataProvider implements ProcessDataProvider
 	@Override
 	public List<ProcessInfo> listProcesses() {
 		return ProcessManager.getInstance().all().stream()
-			.map(p -> new ProcessInfo(
-				p.pid(),
-				p.name(),
-				p.state().name().toLowerCase(),
-				Double.isNaN(p.usage().cpuUsage()) ? 0.0 : p.usage().cpuUsage(),
-				p.usage().totalMemory() < 0 ? 0 : p.usage().totalMemory()))
+			.map(p -> {
+				com.taskmanager.model.ResourceUsage u = p.usage();
+				double cpu = u.cpuUsage();
+				if (!Double.isFinite(cpu) || cpu < 0) {
+					cpu = 0.0;
+				}
+				return new ProcessInfo(
+					p.pid(),
+					p.name(),
+					p.state().name().toLowerCase(java.util.Locale.ROOT),
+					cpu,
+					Math.max(0L, u.totalMemory()));
+			})
 			.toList();
 	}
 
 	@Override
 	public OperationResult operate(ProcessAction action, long pid, String operator) {
+		if (pid < 0 || pid > Integer.MAX_VALUE) {
+			return OperationResult.fail("invalid pid: " + pid);
+		}
 		Process process = ProcessManager.getInstance().get((int) pid);
 		if (process == null) {
 			return OperationResult.fail("process not found: " + pid);

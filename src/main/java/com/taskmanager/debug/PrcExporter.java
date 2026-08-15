@@ -149,7 +149,7 @@ public final class PrcExporter {
 				worker.setDaemon(true);
 				worker.setPriority(Thread.MIN_PRIORITY);
 
-				// 先发布状态，再启动线程；启动失败则回滚全部状态
+				// 先发布状态，再启动线程；启动失败则回滚全部状态并清理文件
 				realtimeFile = file;
 				activeSlot = 0;
 				lastGoodPayload = payload;
@@ -163,6 +163,10 @@ public final class PrcExporter {
 					realtimeWorker = null;
 					realtimeFile = null;
 					lastGoodPayload = null;
+					try {
+						Files.deleteIfExists(file);
+					} catch (IOException ignored) {
+					}
 					throw e;
 				}
 				recordWriteSuccess();
@@ -199,13 +203,17 @@ public final class PrcExporter {
 				return false;
 			}
 		}
-		boolean ok = writeRealtimeSlot();
 		synchronized (lifecycleLock) {
+			if (realtimeRunning) {
+				// join 期间被重新启动，放弃本次停止
+				return false;
+			}
+			boolean ok = writeRealtimeSlot();
 			realtimeWorker = null;
 			realtimeFile = null;
 			lastGoodPayload = null;
+			return ok;
 		}
-		return ok;
 	}
 
 	public boolean isRealtimeRunning() {

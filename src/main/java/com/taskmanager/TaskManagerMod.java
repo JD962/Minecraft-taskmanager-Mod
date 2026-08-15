@@ -13,6 +13,7 @@ import com.taskmanager.remote.TaskManagerServer;
 import com.taskmanager.remote.TaskManagerServerConfig;
 import com.taskmanager.sampling.NvmlGpuSampler;
 import com.taskmanager.sampling.ResourceSampler;
+import java.util.UUID;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents;
@@ -31,13 +32,16 @@ public class TaskManagerMod implements ModInitializer {
 
 	public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
-	/** 远程管理 token（后续可配置）。 */
-	private static final String REMOTE_TOKEN = "taskmanager-default-token";
+	/** 远程管理 token：可通过系统属性 taskmanager.remote.token 配置，未配置时随机生成。 */
+	private static final String REMOTE_TOKEN = System.getProperty("taskmanager.remote.token", UUID.randomUUID().toString());
 
 	/** 任务管理器终端物品（原版容器 UI 的进入渠道）。 */
 	public static final ResourceKey<Item> TERMINAL_KEY = ResourceKey.create(Registries.ITEM, id("task_manager_terminal"));
 	public static final Item TASK_MANAGER_TERMINAL = Registry.register(
 		BuiltInRegistries.ITEM, TERMINAL_KEY, new TaskManagerItem(new Item.Properties().setId(TERMINAL_KEY)));
+
+	/** 每个服务器实例一份的 GPU 采样器，随服务器生命周期创建/释放。 */
+	private NvmlGpuSampler gpuSampler;
 
 	@Override
 	public void onInitialize() {
@@ -60,9 +64,9 @@ public class TaskManagerMod implements ModInitializer {
 			ModManager.getInstance().registerAllMods(pm);
 		});
 
-		// 资源采样：接入 GPU 采样器并启动（M4 UI 接入后改为 UI 可见才启用）
-		NvmlGpuSampler gpuSampler = new NvmlGpuSampler();
+		// 资源采样：每个服务器实例新建 GPU 采样器，避免复用已 close 的实例
 		ServerLifecycleEvents.SERVER_STARTED.register(server -> {
+			gpuSampler = new NvmlGpuSampler();
 			ResourceSampler sampler = ResourceSampler.getInstance();
 			sampler.setGpuSampler(gpuSampler);
 			sampler.start();
@@ -72,25 +76,36 @@ public class TaskManagerMod implements ModInitializer {
 		// 远程管理服务端：启动/停止
 		TaskManagerServer remoteServer = new TaskManagerServer(
 			TaskManagerServerConfig.localhost(REMOTE_TOKEN), TaskManagerProcessDataProvider.getInstance());
+		LOGGER.info("[任务管理器] 远程管理服务端 token: {}", REMOTE_TOKEN);
 		ServerLifecycleEvents.SERVER_STARTED.register(server -> {
 			try {
 				remoteServer.start();
 			} catch (InterruptedException e) {
 				Thread.currentThread().interrupt();
+				LOGGER.warn("[任务管理器] 远程服务端启动被中断");
 			} catch (RuntimeException e) {
 				LOGGER.warn("[任务管理器] 远程服务端启动失败: {}", e.getMessage());
 			}
 		});
 
-		// 服务器停止时停止采样、释放 GPU、清空进程表、停止远程服务端、关闭调试模式与实时导出
+		// 服务器停止时清理，逐项隔离异常，避免一处失败导致后续清理跳过
 		ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
-			ResourceSampler.getInstance().stop();
-			gpuSampler.close();
-			ProcessManager.getInstance().clear();
-			ProcessManager.getInstance().setServer(null);
-			remoteServer.stop();
-			DebugLogger.getInstance().disable();
-			PrcExporter.getInstance().stopRealtime();
+			safely("远程服务端", remoteServer::stop);
+			safely("资源采样", () -> ResourceSampler.getInstance().stop());
+			safely("GPU 采样器", () -> {
+				ResourceSampler.getInstance().setGpuSampler(null);
+				if (gpuSampler != null) {
+					gpuSampler.close();
+					gpuSampler = null;
+				}
+			});
+			safely("进程表", () -> {
+				ProcessManager.getInstance().clear();
+				ProcessManager.getInstance().setServer(null);
+			});
+			safely("模组管理", () -> ModManager.getInstance().clear());
+			safely("调试日志", () -> DebugLogger.getInstance().disable());
+			safely("实时导出", () -> PrcExporter.getInstance().stopRealtime());
 		});
 
 		// /taskmgr 命令
@@ -98,6 +113,14 @@ public class TaskManagerMod implements ModInitializer {
 			TaskManagerCommand.register(dispatcher));
 
 		LOGGER.info("[任务管理器] 事件与命令注册完成。");
+	}
+
+	private static void safely(String what, Runnable action) {
+		try {
+			action.run();
+		} catch (Throwable t) {
+			LOGGER.error("[任务管理器] 清理 {} 失败", what, t);
+		}
 	}
 
 	public static Identifier id(String path) {

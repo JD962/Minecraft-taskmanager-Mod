@@ -76,11 +76,21 @@ public final class ResourceSampler {
 	}
 
 	public synchronized void stop() {
+		if (!running) {
+			return;
+		}
 		running = false;
 		methodProfiler.stop();
-		if (worker != null) {
-			worker.interrupt();
-			worker = null;
+		Thread t = worker;
+		worker = null;
+		if (t != null) {
+			t.interrupt();
+			// 等待采样线程真正退出，避免与 GPU 采样器 close 等资源释放产生竞态
+			try {
+				t.join(2000L);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+			}
 		}
 	}
 
