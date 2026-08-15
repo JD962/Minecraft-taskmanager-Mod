@@ -67,6 +67,9 @@ public final class TaskManagerServer {
 		return clients.size();
 	}
 
+	// netty 4.1.97 将 NioEventLoopGroup 标记为 deprecated（为 4.2 的 MultiThreadIoEventLoopGroup 预热），
+	// 但替代类尚未在 4.1.x 引入，故保留并抑制警告。
+	@SuppressWarnings("deprecation")
 	public void start() throws InterruptedException {
 		synchronized (lock) {
 			if (running) {
