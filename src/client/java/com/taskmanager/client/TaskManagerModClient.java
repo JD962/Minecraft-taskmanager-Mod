@@ -1,5 +1,6 @@
 package com.taskmanager.client;
 
+import com.taskmanager.client.bridge.TaskManagerClientBridge;
 import com.taskmanager.client.gui.TaskManagerScreen;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
@@ -11,7 +12,11 @@ public class TaskManagerModClient implements ClientModInitializer {
 
 	@Override
 	public void onInitializeClient() {
-		// 按 F4 打开/关闭任务管理器 UI
+		// 原版容器 UI 进入渠道：终端物品右键触发此桥接，打开任务管理器 GUI
+		TaskManagerClientBridge.setOpener(() ->
+			Minecraft.getInstance().gui.setScreen(new TaskManagerScreen()));
+
+		// 快捷键：按 F4 打开/关闭任务管理器 UI（可选快捷方式）
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			boolean down = GLFW.glfwGetKey(client.getWindow().handle(), GLFW.GLFW_KEY_F4) == GLFW.GLFW_PRESS;
 			if (down && !keyWasDown) {
@@ -26,3 +31,4 @@ public class TaskManagerModClient implements ClientModInitializer {
 		});
 	}
 }
+

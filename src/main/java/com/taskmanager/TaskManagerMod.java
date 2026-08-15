@@ -2,6 +2,7 @@ package com.taskmanager;
 
 import com.taskmanager.command.TaskManagerCommand;
 import com.taskmanager.core.ProcessManager;
+import com.taskmanager.item.TaskManagerItem;
 import com.taskmanager.model.ProcessSource;
 import com.taskmanager.sampling.NvmlGpuSampler;
 import com.taskmanager.sampling.ResourceSampler;
@@ -9,7 +10,12 @@ import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.minecraft.core.Registry;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.world.item.Item;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -17,6 +23,11 @@ public class TaskManagerMod implements ModInitializer {
 	public static final String MOD_ID = "taskmanager";
 
 	public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+
+	/** 任务管理器终端物品（原版容器 UI 的进入渠道）。 */
+	public static final ResourceKey<Item> TERMINAL_KEY = ResourceKey.create(Registries.ITEM, id("task_manager_terminal"));
+	public static final Item TASK_MANAGER_TERMINAL = Registry.register(
+		BuiltInRegistries.ITEM, TERMINAL_KEY, new TaskManagerItem(new Item.Properties().setId(TERMINAL_KEY)));
 
 	@Override
 	public void onInitialize() {
