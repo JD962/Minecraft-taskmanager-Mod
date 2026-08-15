@@ -10,7 +10,7 @@
 	"taskmanager.col.name": "Name",
 	"taskmanager.col.state": "State",
 	"taskmanager.col.cpu": "CPU",
-	"taskmanager.col.memory": "Memory",
+	"taskmanager.col.memory": "Heap",
 	"taskmanager.state.running": "Running",
 	"taskmanager.state.paused": "Paused",
 	"taskmanager.state.terminated": "Terminated",

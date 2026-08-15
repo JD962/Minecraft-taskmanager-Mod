@@ -10,7 +10,7 @@
 	"taskmanager.col.name": "名称",
 	"taskmanager.col.state": "状态",
 	"taskmanager.col.cpu": "CPU",
-	"taskmanager.col.memory": "内存",
+	"taskmanager.col.memory": "堆内存",
 	"taskmanager.state.running": "运行",
 	"taskmanager.state.paused": "已暂停",
 	"taskmanager.state.terminated": "已终止",

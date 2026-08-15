@@ -69,8 +69,9 @@ public class TaskManagerScreen extends Screen {
 	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
 		graphics.fill(0, 0, this.width, this.height, bg());
 		graphics.fill(0, 0, this.width, 26, panel());
-		graphics.centeredText(this.font, tr("taskmanager.title"), this.width / 2, 8, text());
+		tmCentered(graphics, tr("taskmanager.title"), this.width / 2, 8, text());
 		renderThemeButton(graphics);
+		renderCloseButton(graphics);
 		renderTabs(graphics);
 		renderProcessList(graphics);
 		renderDetailPanel(graphics);
@@ -82,12 +83,20 @@ public class TaskManagerScreen extends Screen {
 		super.extractRenderState(graphics, mouseX, mouseY, partialTick);
 	}
 
-	// ===== 主题 =====
+	// ===== 主题 / 关闭 =====
 	private void renderThemeButton(GuiGraphicsExtractor graphics) {
-		int x = this.width - 52;
+		int x = Math.max(0, this.width - 76);
 		int y = 5;
-		graphics.fill(x, y, x + 44, y + 16, button());
-		graphics.centeredText(this.font, tr(darkMode ? "taskmanager.theme.dark" : "taskmanager.theme.light"), x + 22, y + 4, text());
+		graphics.fill(x, y, x + 48, y + 16, button());
+		tmCentered(graphics, tr(darkMode ? "taskmanager.theme.dark" : "taskmanager.theme.light"), x + 24, y + 4, text());
+	}
+
+	/** 右上角关闭按钮。 */
+	private void renderCloseButton(GuiGraphicsExtractor graphics) {
+		int x = Math.max(0, this.width - 24);
+		int y = 5;
+		graphics.fill(x, y, x + 20, y + 16, button());
+		tmCentered(graphics, "X", x + 10, y + 4, text());
 	}
 
 	// ===== 页签 =====
@@ -99,7 +108,7 @@ public class TaskManagerScreen extends Screen {
 			int x = startX + i * (tabWidth + 4);
 			boolean active = i == activeTab;
 			graphics.fill(x, y, x + tabWidth, y + 20, active ? accent() : button());
-			graphics.centeredText(this.font, tr(TABS[i]), x + tabWidth / 2, y + 6, active ? 0xFFFFFF : textMuted());
+			tmCentered(graphics, tr(TABS[i]), x + tabWidth / 2, y + 6, active ? 0xFFFFFFFF : textMuted());
 		}
 	}
 
@@ -156,11 +165,11 @@ public class TaskManagerScreen extends Screen {
 	private void renderProcessList(GuiGraphicsExtractor graphics) {
 		int x = 20;
 		int y = 82;
-		graphics.text(this.font, tr("taskmanager.col.pid"), x, y, textMuted());
-		graphics.text(this.font, tr("taskmanager.col.name"), x + 50, y, textMuted());
-		graphics.text(this.font, tr("taskmanager.col.state"), x + 220, y, textMuted());
-		graphics.text(this.font, tr("taskmanager.col.cpu"), x + 300, y, textMuted());
-		graphics.text(this.font, tr("taskmanager.col.memory"), x + 380, y, textMuted());
+		tmText(graphics, tr("taskmanager.col.pid"), x, y, textMuted());
+		tmText(graphics, tr("taskmanager.col.name"), x + 50, y, textMuted());
+		tmText(graphics, tr("taskmanager.col.state"), x + 220, y, textMuted());
+		tmText(graphics, tr("taskmanager.col.cpu"), x + 300, y, textMuted());
+		tmText(graphics, tr("taskmanager.col.memory"), x + 380, y, textMuted());
 
 		int top = listTop();
 		int bottom = listBottom();
@@ -173,33 +182,33 @@ public class TaskManagerScreen extends Screen {
 			switch (row.kind()) {
 				case KIND_PROCESS -> renderProcessRow(graphics, row.process(), x, screenY);
 				case KIND_THREAD -> renderThreadRow(graphics, row.thread(), x + 30, screenY);
-				default -> graphics.text(this.font, String.format("    %s %.1f%%",
+				default -> tmText(graphics, String.format("    %s %.1f%%",
 					row.method().methodName(), row.method().cpuRatio()), x + 46, screenY, textMuted());
 			}
 		}
 		if (rows.isEmpty()) {
-			graphics.text(this.font, tr("taskmanager.empty"), x, top, textMuted());
+			tmText(graphics, tr("taskmanager.empty"), x, top, textMuted());
 		}
 	}
 
 	private void renderProcessRow(GuiGraphicsExtractor graphics, Process p, int x, int screenY) {
 		if (p.pid() == selectedPid) {
-			graphics.fill(15, screenY - 1, this.width - 15, screenY + 13, accent());
+			graphics.fill(15, screenY - 1, x + 440, screenY + 13, accent());
 		}
 		boolean expanded = expandedProcesses.contains(p.pid());
-		graphics.text(this.font, (expanded ? "v " : "> ") + p.pid(), x, screenY, text());
-		graphics.text(this.font, p.name(), x + 50, screenY, text());
-		graphics.text(this.font, tr(stateKey(p.state())), x + 220, screenY, stateColor(p));
-		graphics.text(this.font, cpuText(p), x + 300, screenY, heatColor(p.usage().cpuUsage()));
-		graphics.text(this.font, memoryText(p), x + 380, screenY, textMuted());
+		tmText(graphics, (expanded ? "v " : "> ") + p.pid(), x, screenY, text());
+		tmText(graphics, p.name(), x + 50, screenY, text());
+		tmText(graphics, tr(stateKey(p.state())), x + 220, screenY, stateColor(p));
+		tmText(graphics, cpuText(p), x + 300, screenY, heatColor(p.usage().cpuUsage()));
+		tmText(graphics, memoryText(p), x + 380, screenY, textMuted());
 	}
 
 	private void renderThreadRow(GuiGraphicsExtractor graphics, ThreadInfo thread, int x, int screenY) {
 		String prefix = thread.daemon() ? "* " : "- ";
-		graphics.text(this.font, prefix + thread.threadName(), x, screenY, textMuted());
-		graphics.text(this.font, stateText(thread.state()), x + 170, screenY, stateColor2(thread.state()));
-		graphics.text(this.font, cpuText2(thread), x + 250, screenY, heatColor(thread.usage().cpuUsage()));
-		graphics.text(this.font, allocText(thread.allocatedBytes()), x + 320, screenY, textMuted());
+		tmText(graphics, prefix + thread.threadName(), x, screenY, textMuted());
+		tmText(graphics, stateText(thread.state()), x + 170, screenY, stateColor2(thread.state()));
+		tmText(graphics, cpuText2(thread), x + 250, screenY, heatColor(thread.usage().cpuUsage()));
+		tmText(graphics, allocText(thread.allocatedBytes()), x + 320, screenY, textMuted());
 	}
 
 	private static String cpuText2(ThreadInfo t) {
@@ -246,12 +255,21 @@ public class TaskManagerScreen extends Screen {
 		int panelTop = this.height - 150;
 		graphics.fill(0, panelTop, this.width, this.height, panel());
 		if (selected == null) {
-			graphics.text(this.font, tr("taskmanager.hint"), 20, panelTop + 8, textMuted());
+			tmText(graphics, tr("taskmanager.hint"), 20, panelTop + 8, textMuted());
+			// 日志/设置按钮不依赖选中进程，始终渲染可用
+			renderActionButton(graphics, tr("taskmanager.btn.logs"), 20, panelTop + 74);
+			renderActionButton(graphics, tr("taskmanager.btn.settings"), 78, panelTop + 74);
 			return;
 		}
-		graphics.text(this.font, String.format("PID %d | %s | %s %s | %s %d",
-			selected.pid(), selected.name(), tr("taskmanager.col.state"), tr(stateKey(selected.state())),
-			tr("taskmanager.priority"), selected.priority()), 20, panelTop + 8, text());
+		boolean global = selected.category() == ProcessCategory.GLOBAL;
+		String memDetail = selected.usage().heapMemory() >= 0
+			? String.format("堆 %s / 非堆 %s", formatBytes(selected.usage().heapMemory()), formatBytes(selected.usage().nonHeapMemory()))
+			: "-";
+		tmText(graphics, String.format("PID %d %s | %s | %s %d | CPU %s | %s %s%s",
+			selected.pid(), selected.name(), tr(stateKey(selected.state())),
+			tr("taskmanager.priority"), selected.priority(), cpuText(selected),
+			tr("taskmanager.col.memory"), memDetail,
+			global ? " (JVM共享)" : ""), 20, panelTop + 8, text());
 		renderActionButton(graphics, tr("taskmanager.btn.pause"), 20, panelTop + 26);
 		renderActionButton(graphics, tr("taskmanager.btn.resume"), 78, panelTop + 26);
 		renderActionButton(graphics, tr("taskmanager.btn.terminate"), 136, panelTop + 26);
@@ -270,7 +288,7 @@ public class TaskManagerScreen extends Screen {
 
 	private void renderActionButton(GuiGraphicsExtractor graphics, String label, int x, int y, int w) {
 		graphics.fill(x, y, x + w, y + 18, button());
-		graphics.centeredText(this.font, label, x + w / 2, y + 5, text());
+		tmCentered(graphics, label, x + w / 2, y + 5, text());
 	}
 
 	private boolean showLogs = false;
@@ -283,20 +301,20 @@ public class TaskManagerScreen extends Screen {
 		int panelTop = this.height - 150;
 		int logTop = this.height / 3;
 		graphics.fill(20, logTop, this.width - 20, panelTop - 4, bg());
-		graphics.text(this.font, tr("taskmanager.logs.title"), 24, logTop + 6, text());
+		tmText(graphics, tr("taskmanager.logs.title"), 24, logTop + 6, text());
 		List<OperationLog> logs = OperationEngine.getInstance().logs();
 		int y = logTop + 24;
 		int count = 0;
 		for (int i = logs.size() - 1; i >= 0 && count < 6; i--, count++, y += 12) {
 			OperationLog log = logs.get(i);
-			graphics.text(this.font, String.format("[%s] %s %s -> %s", time(log.timestamp()), log.action(), log.target(), log.result()), 24, y, textMuted());
+			tmText(graphics, String.format("[%s] %s %s -> %s", time(log.timestamp()), log.action(), log.target(), log.result()), 24, y, textMuted());
 		}
 		// 调试模式：追加事件流（线程创建/销毁、导出状态等）
 		if (DebugLogger.getInstance().isEnabled()) {
 			List<String> debug = DebugLogger.getInstance().buffered();
 			y += 6;
 			for (int i = debug.size() - 1; i >= 0 && y < panelTop - 10; i--, y += 12) {
-				graphics.text(this.font, debug.get(i), 24, y, textMuted());
+				tmText(graphics, debug.get(i), 24, y, textMuted());
 			}
 		}
 	}
@@ -311,19 +329,19 @@ public class TaskManagerScreen extends Screen {
 		int cx = this.width / 2 - 120;
 		int cy = this.height / 2 - 100;
 		graphics.fill(cx, cy, cx + 240, cy + 200, panel());
-		graphics.centeredText(this.font, tr("taskmanager.settings.title"), cx + 120, cy + 6, text());
-		graphics.text(this.font, tr("taskmanager.settings.interval").formatted(ResourceSampler.getInstance().intervalMs()), cx + 10, cy + 28, text());
+		tmCentered(graphics, tr("taskmanager.settings.title"), cx + 120, cy + 6, text());
+		tmText(graphics, tr("taskmanager.settings.interval").formatted(ResourceSampler.getInstance().intervalMs()), cx + 10, cy + 28, text());
 		renderActionButton(graphics, "0.5s", cx + 10, cy + 44);
 		renderActionButton(graphics, "1s", cx + 70, cy + 44);
 		renderActionButton(graphics, "5s", cx + 130, cy + 44);
 
 		// 调试模式开关
-		graphics.text(this.font, tr("taskmanager.settings.debug"), cx + 10, cy + 70, text());
+		tmText(graphics, tr("taskmanager.settings.debug"), cx + 10, cy + 70, text());
 		boolean debugOn = DebugLogger.getInstance().isEnabled();
 		renderActionButton(graphics, tr(debugOn ? "taskmanager.settings.debug_off" : "taskmanager.settings.debug_on"), cx + 130, cy + 70, 100);
 
 		// 进程表导出
-		graphics.text(this.font, tr("taskmanager.settings.export"), cx + 10, cy + 96, text());
+		tmText(graphics, tr("taskmanager.settings.export"), cx + 10, cy + 96, text());
 		renderActionButton(graphics, tr("taskmanager.settings.export_once"), cx + 10, cy + 118);
 		renderActionButton(graphics, tr(PrcExporter.getInstance().isRealtimeRunning()
 			? "taskmanager.settings.export_stop" : "taskmanager.settings.export_realtime"), cx + 70, cy + 118, 100);
@@ -331,7 +349,7 @@ public class TaskManagerScreen extends Screen {
 
 		// 导出状态
 		PrcExporter ex = PrcExporter.getInstance();
-		graphics.text(this.font, "写 " + ex.writeCount() + " | " + ex.lastValidation(), cx + 10, cy + 144, textMuted());
+		tmText(graphics, "写 " + ex.writeCount() + " | " + ex.lastValidation(), cx + 10, cy + 144, textMuted());
 
 		renderActionButton(graphics, tr("taskmanager.settings.close"), cx + 92, cy + 172);
 	}
@@ -341,8 +359,13 @@ public class TaskManagerScreen extends Screen {
 	public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
 		int mx = (int) event.x();
 		int my = (int) event.y();
+		// 关闭按钮（右上角 X）
+		if (mx >= this.width - 24 && mx <= this.width - 4 && my >= 5 && my <= 21) {
+			this.onClose();
+			return true;
+		}
 		// 主题按钮
-		if (mx >= this.width - 52 && mx <= this.width - 8 && my >= 5 && my <= 21) {
+		if (mx >= this.width - 76 && mx <= this.width - 28 && my >= 5 && my <= 21) {
 			darkMode = !darkMode;
 			return true;
 		}
@@ -358,32 +381,53 @@ public class TaskManagerScreen extends Screen {
 		// 进程/线程列表点击（选中/展开）——用与渲染一致的扁平化布局做命中测试，避免偏移
 		List<Row> rows = buildRows();
 		int top = listTop();
-		for (Row row : rows) {
-			int screenY = top + row.y() - scrollOffset;
-			if (my >= screenY && my < screenY + ROW_H) {
-				if (row.kind() == KIND_PROCESS) {
-					Process p = row.process();
-					if (selectedPid == p.pid()) {
-						if (expandedProcesses.contains(p.pid())) {
-							expandedProcesses.remove(p.pid());
-						} else {
-							expandedProcesses.add(p.pid());
+		int bottom = listBottom();
+		// 鼠标必须在列表区域内（底部面板/按钮在 bottom 以下）
+		if (my < bottom) {
+			for (Row row : rows) {
+				int screenY = top + row.y() - scrollOffset;
+				if (screenY >= bottom) {
+					break; // 行按 y 递增，超出列表底界后不再匹配
+				}
+				int hitTop = Math.max(screenY, top);
+				int hitBottom = Math.min(screenY + ROW_H, bottom);
+				if (my >= hitTop && my < hitBottom) {
+					if (row.kind() == KIND_PROCESS) {
+						Process p = row.process();
+						if (selectedPid == p.pid()) {
+							if (expandedProcesses.contains(p.pid())) {
+								expandedProcesses.remove(p.pid());
+							} else {
+								expandedProcesses.add(p.pid());
+							}
 						}
+						selectedPid = p.pid();
+						return true;
+					} else if (row.kind() == KIND_THREAD) {
+						ThreadInfo t = row.thread();
+						if (expandedThreads.contains(t.threadId())) {
+							expandedThreads.remove(t.threadId());
+						} else {
+							expandedThreads.add(t.threadId());
+						}
+						return true;
 					}
-					selectedPid = p.pid();
-					return true;
-				} else if (row.kind() == KIND_THREAD) {
-					ThreadInfo t = row.thread();
-					if (expandedThreads.contains(t.threadId())) {
-						expandedThreads.remove(t.threadId());
-					} else {
-						expandedThreads.add(t.threadId());
-					}
-					return true;
 				}
 			}
 		}
-		// 操作按钮
+		// 日志/设置按钮（不依赖选中进程，始终可用）
+		{
+			int panelTop = this.height - 150;
+			if (hit(mx, my, 20, panelTop + 74)) {
+				showLogs = !showLogs;
+				return true;
+			}
+			if (hit(mx, my, 78, panelTop + 74)) {
+				showSettings = !showSettings;
+				return true;
+			}
+		}
+		// 进程操作按钮（需选中进程）
 		Process selected = selectedPid < 0 ? null : ProcessManager.getInstance().get(selectedPid);
 		if (selected != null) {
 			int panelTop = this.height - 150;
@@ -417,14 +461,6 @@ public class TaskManagerScreen extends Screen {
 			}
 			if (hit(mx, my, 156, panelTop + 50, 84)) {
 				OperationEngine.getInstance().start(selected, "本地用户");
-				return true;
-			}
-			if (hit(mx, my, 20, panelTop + 74)) {
-				showLogs = !showLogs;
-				return true;
-			}
-			if (hit(mx, my, 78, panelTop + 74)) {
-				showSettings = !showSettings;
 				return true;
 			}
 		}
@@ -510,6 +546,15 @@ public class TaskManagerScreen extends Screen {
 		return mx >= x && mx <= x + w && my >= y && my <= y + 18;
 	}
 
+	// ===== 无阴影文字（自定义纯色面板下，关闭 Minecraft 默认阴影，避免亮色主题重影） =====
+	private void tmText(GuiGraphicsExtractor g, String str, int x, int y, int color) {
+		g.text(this.font, str, x, y, color, false);
+	}
+
+	private void tmCentered(GuiGraphicsExtractor g, String str, int x, int y, int color) {
+		g.text(this.font, str, x - this.font.width(str) / 2, y, color, false);
+	}
+
 	// ===== 过滤与格式化 =====
 	private List<Process> filteredProcesses() {
 		List<Process> all = new ArrayList<>(ProcessManager.getInstance().all());
@@ -565,17 +610,25 @@ public class TaskManagerScreen extends Screen {
 	}
 
 	private static String memoryText(Process p) {
-		long mem = p.usage().totalMemory();
-		if (mem < 0) {
-			return "N/A";
+		if (p.usage().heapMemory() < 0) {
+			// 实体进程为逻辑容器，无独立内存
+			return "-";
 		}
-		if (mem < 1024) {
-			return mem + " B";
+		// 全局进程共享 JVM 堆，不逐行重复显示数值，避免误导
+		return "共享";
+	}
+
+	private static String formatBytes(long bytes) {
+		if (bytes < 1024) {
+			return bytes + " B";
 		}
-		if (mem < 1024 * 1024) {
-			return String.format("%.1f KB", mem / 1024.0);
+		if (bytes < 1024 * 1024) {
+			return String.format("%.1f KB", bytes / 1024.0);
 		}
-		return String.format("%.1f MB", mem / (1024.0 * 1024.0));
+		if (bytes < 1024L * 1024 * 1024) {
+			return String.format("%.1f MB", bytes / (1024.0 * 1024.0));
+		}
+		return String.format("%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0));
 	}
 
 	private int heatColor(double percent) {
