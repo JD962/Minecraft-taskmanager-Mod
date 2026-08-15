@@ -6,6 +6,7 @@ import com.taskmanager.api.ProcessState;
 import com.taskmanager.debug.DebugLogger;
 import com.taskmanager.model.Process;
 import com.taskmanager.model.ProcessCategory;
+import com.taskmanager.model.ThreadInfo;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Objects;
@@ -35,11 +36,16 @@ public final class OperationEngine {
 		return INSTANCE;
 	}
 
-	/** 暂停：运行中 → 已暂停（逻辑暂停：标志位，真实线程不挂起）。 */
+	/** 暂停：运行中 → 已暂停。仅对可真实暂停的目标生效（实体 noAI / 受管任务协作标志）。 */
 	public boolean pause(Process process, String operator) {
 		Objects.requireNonNull(process, "process");
 		if (process.state() != ProcessState.RUNNING) {
 			log(operator, "暂停", process, "失败: 状态非运行中");
+			return false;
+		}
+		Object target = process.target();
+		if (!(target instanceof Mob) && !(target instanceof ManagedTask)) {
+			log(operator, "暂停", process, "失败: 系统核心线程不支持真实挂起（Thread.suspend 已废弃）");
 			return false;
 		}
 		try {
@@ -79,7 +85,7 @@ public final class OperationEngine {
 		}
 	}
 
-	/** 终止：已终止则幂等成功；逻辑终止（全局进程仅改状态标记）。 */
+	/** 终止：已终止则幂等成功；仅对可真实终止的目标生效（实体 discard / 受管任务中断）。 */
 	public boolean terminate(Process process, String operator) {
 		Objects.requireNonNull(process, "process");
 		if (process.state() == ProcessState.TERMINATED) {
@@ -89,6 +95,11 @@ public final class OperationEngine {
 		ProcessAdapter adapter = process.adapter();
 		if (adapter != null && !adapter.isTerminable()) {
 			log(operator, "终止", process, "失败: 进程受保护不可终止");
+			return false;
+		}
+		Object target = process.target();
+		if (!(target instanceof Entity) && !(target instanceof ManagedTask)) {
+			log(operator, "终止", process, "失败: 系统核心线程不支持真实终止");
 			return false;
 		}
 		try {
@@ -102,12 +113,17 @@ public final class OperationEngine {
 		}
 	}
 
-	/** 强制终止：内置底层路径，不可被覆盖；已终止则幂等成功。 */
+	/** 强制终止：内置底层路径，不可被覆盖；已终止则幂等成功；系统核心线程同样拒绝。 */
 	public boolean forceTerminate(Process process, String operator) {
 		Objects.requireNonNull(process, "process");
 		if (process.state() == ProcessState.TERMINATED) {
 			log(operator, "强制终止", process, "忽略: 已终止");
 			return true;
+		}
+		Object target = process.target();
+		if (!(target instanceof Entity) && !(target instanceof ManagedTask)) {
+			log(operator, "强制终止", process, "失败: 系统核心线程不支持真实终止");
+			return false;
 		}
 		try {
 			applyTerminate(process);
@@ -152,17 +168,12 @@ public final class OperationEngine {
 			log(operator, "重启", process, "失败: 实体进程需适配器支持重启");
 			return false;
 		}
-		try {
-			process.setState(ProcessState.RUNNING);
-			log(operator, "重启", process, "成功");
-			return true;
-		} catch (Exception e) {
-			log(operator, "重启", process, "失败: " + e.getMessage());
-			return false;
-		}
+		// target 为 null（系统核心全局进程）：终止本身被拒，重启无意义，诚实拒绝
+		log(operator, "重启", process, "失败: 系统核心线程不支持重启（无法真实终止）");
+		return false;
 	}
 
-	/** 调整优先级：1~5 档，3 为默认（逻辑优先级，仅对真实线程映射时生效）。 */
+	/** 调整优先级：1~5 档，3 为默认。对所有进程真实映射其线程的 Java 优先级。 */
 	public boolean setPriority(Process process, int level, String operator) {
 		Objects.requireNonNull(process, "process");
 		if (level < ProcessAdapter.MIN_PRIORITY || level > ProcessAdapter.MAX_PRIORITY) {
@@ -178,13 +189,44 @@ public final class OperationEngine {
 			if (target instanceof ManagedTask task) {
 				task.setPriority(level);
 			}
+			int mapped = applyThreadPriority(process, level);
 			process.setPriority(level);
-			log(operator, "调整优先级", process, "成功(" + level + ")");
+			log(operator, "调整优先级", process, "成功(" + level + "，映射 " + mapped + " 线程)");
 			return true;
 		} catch (Exception e) {
 			log(operator, "调整优先级", process, "失败: " + e.getMessage());
 			return false;
 		}
+	}
+
+	/** 将进程下所有线程的真实 Java 优先级映射到档位（3 档 = NORM_PRIORITY），返回映射的线程数。 */
+	private static int applyThreadPriority(Process process, int level) {
+		int mapped = switch (level) {
+			case 1 -> Thread.MIN_PRIORITY;
+			case 2 -> 3;
+			case 4 -> 7;
+			case 5 -> Thread.MAX_PRIORITY;
+			default -> Thread.NORM_PRIORITY;
+		};
+		int count = 0;
+		for (ThreadInfo info : process.threads()) {
+			Thread thread = findThread(info.threadId());
+			if (thread != null) {
+				thread.setPriority(mapped);
+				count++;
+			}
+		}
+		return count;
+	}
+
+	/** 按线程 ID 查找真实 Thread 对象（操作频率低，遍历获取可接受）。 */
+	private static Thread findThread(long threadId) {
+		for (Thread t : Thread.getAllStackTraces().keySet()) {
+			if (t.threadId() == threadId) {
+				return t;
+			}
+		}
+		return null;
 	}
 
 	/** 启动：待启动 → 运行中；已暂停 → 恢复；已终止的实体进程不能原地启动。 */
