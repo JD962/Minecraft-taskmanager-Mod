@@ -3,6 +3,8 @@ package com.taskmanager;
 import com.taskmanager.command.TaskManagerCommand;
 import com.taskmanager.core.ProcessManager;
 import com.taskmanager.model.ProcessSource;
+import com.taskmanager.sampling.NvmlGpuSampler;
+import com.taskmanager.sampling.ResourceSampler;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents;
@@ -34,9 +36,21 @@ public class TaskManagerMod implements ModInitializer {
 			pm.registerGlobal("网络 IO", ProcessSource.game());
 		});
 
-		// 服务器停止时清空进程表
-		ServerLifecycleEvents.SERVER_STOPPED.register(server ->
-			ProcessManager.getInstance().clear());
+		// 资源采样：接入 GPU 采样器并启动（M4 UI 接入后改为 UI 可见才启用）
+		NvmlGpuSampler gpuSampler = new NvmlGpuSampler();
+		ServerLifecycleEvents.SERVER_STARTED.register(server -> {
+			ResourceSampler sampler = ResourceSampler.getInstance();
+			sampler.setGpuSampler(gpuSampler);
+			sampler.start();
+			LOGGER.info("[任务管理器] GPU 采样器可用性: {}", gpuSampler.isAvailable());
+		});
+
+		// 服务器停止时停止采样、释放 GPU、清空进程表
+		ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
+			ResourceSampler.getInstance().stop();
+			gpuSampler.close();
+			ProcessManager.getInstance().clear();
+		});
 
 		// /taskmgr 命令
 		CommandRegistrationCallback.EVENT.register((dispatcher, context, selection) ->
