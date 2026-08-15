@@ -38,3 +38,6 @@ hs_err_*.log
 replay_*.log
 *.hprof
 *.jfr
+
+# workbuddy 工作区数据（memory/反编译源码/临时文件），不入库
+.workbuddy/

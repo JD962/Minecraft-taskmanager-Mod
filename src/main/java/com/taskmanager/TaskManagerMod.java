@@ -1,9 +1,13 @@
 package com.taskmanager;
 
+import com.taskmanager.command.TaskManagerCommand;
+import com.taskmanager.core.ProcessManager;
+import com.taskmanager.model.ProcessSource;
 import net.fabricmc.api.ModInitializer;
-
+import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.minecraft.resources.Identifier;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -14,7 +18,31 @@ public class TaskManagerMod implements ModInitializer {
 
 	@Override
 	public void onInitialize() {
-		LOGGER.info("[TaskManager] 模组已初始化。");
+		LOGGER.info("[任务管理器] 模组已初始化。");
+
+		// 实体进程：随实体加载/卸载动态创建/销毁
+		ServerEntityEvents.ENTITY_LOAD.register((entity, world) ->
+			ProcessManager.getInstance().registerEntity(entity));
+		ServerEntityEvents.ENTITY_UNLOAD.register((entity, world) ->
+			ProcessManager.getInstance().unregisterEntity(entity));
+
+		// 全局进程：服务器启动时登记系统级任务
+		ServerLifecycleEvents.SERVER_STARTING.register(server -> {
+			ProcessManager pm = ProcessManager.getInstance();
+			pm.registerGlobal("服务端主循环", ProcessSource.game());
+			pm.registerGlobal("世界 Tick", ProcessSource.game());
+			pm.registerGlobal("网络 IO", ProcessSource.game());
+		});
+
+		// 服务器停止时清空进程表
+		ServerLifecycleEvents.SERVER_STOPPED.register(server ->
+			ProcessManager.getInstance().clear());
+
+		// /taskmgr 命令
+		CommandRegistrationCallback.EVENT.register((dispatcher, context, selection) ->
+			TaskManagerCommand.register(dispatcher));
+
+		LOGGER.info("[任务管理器] 事件与命令注册完成。");
 	}
 
 	public static Identifier id(String path) {
