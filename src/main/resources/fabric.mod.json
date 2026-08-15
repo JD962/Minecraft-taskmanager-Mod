@@ -1,0 +1,38 @@
+{
+	"schemaVersion": 1,
+	"id": "taskmanager",
+	"version": "${version}",
+	"name": "Task Manager",
+	"description": "游戏内任务管理器：管理游戏内全部进程与线程，提供进程树、资源监控（CPU/内存/GPU）与进程操作（暂停/恢复/终止/重启/调整优先级/启动）。",
+	"authors": [
+		"WorkBuddy"
+	],
+	"contact": {},
+	"license": "CC0-1.0",
+	"icon": "assets/taskmanager/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.taskmanager.TaskManagerMod"
+		],
+		"client": [
+			"com.taskmanager.client.TaskManagerModClient"
+		],
+		"fabric-datagen": [
+			"com.taskmanager.client.TaskManagerModDataGenerator"
+		]
+	},
+	"mixins": [
+		"taskmanager.mixins.json",
+		{
+			"config": "taskmanager.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~26.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

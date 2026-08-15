@@ -1,0 +1,14 @@
+{
+	"required": true,
+	"package": "com.taskmanager.client.mixin",
+	"compatibilityLevel": "JAVA_25",
+	"client": [
+		"TaskManagerModClientMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	},
+	"overwrites": {
+		"requireAnnotations": true
+	}
+}
