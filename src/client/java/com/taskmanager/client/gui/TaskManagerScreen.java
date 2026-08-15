@@ -143,7 +143,7 @@ public class TaskManagerScreen extends Screen {
 		// 展示「已用/已提交」：已提交对应实际物理内存 RSS，GC 不回收、数值稳定
 		String memStr = String.format("%s/%s", formatBytes(heapUsed), formatBytes(heapCommitted));
 		String gpuStr = Double.isNaN(gpu) ? "N/A" : String.format("%.1f%%", gpu);
-		tmText(graphics, String.format("进程CPU %s | 系统CPU %s | 堆 %s | GPU %s", cpuStr, sysStr, memStr, gpuStr),
+		tmText(graphics, String.format("JVM CPU %s | 系统 CPU %s | 堆 %s | GPU %s", cpuStr, sysStr, memStr, gpuStr),
 			260, 40, textMuted());
 	}
 
@@ -157,9 +157,9 @@ public class TaskManagerScreen extends Screen {
 	private static final int KIND_THREAD = 5;      // 线程
 	private static final int KIND_METHOD = 6;      // 方法
 
-	/** 扁平化可视行：渲染与命中测试共用，保证点击不偏移。key 为展开键（稳定来源 ID），label 为显示文字。 */
+	/** 扁平化可视行：渲染与命中测试共用，保证点击不偏移。key 为展开键（稳定来源 ID），label 为显示文字；hasChildren 决定是否显示展开箭头。 */
 	private record Row(int kind, Process process, ThreadInfo thread, MethodProfiler.MethodNode method,
-	                   String key, String label, int depth, int y) {
+	                   String key, String label, int depth, int y, boolean hasChildren) {
 	}
 
 	/** 构建树形行布局：原版/非原版 → 来源 → 类别 → 细分类（实体）→ 进程 → 线程 → 方法。 */
@@ -204,13 +204,13 @@ public class TaskManagerScreen extends Screen {
 		if (sourceIds.isEmpty()) {
 			return y; // 该分组无进程（如空世界无实体时非原版组仍显示 mod，原版组显示全局）
 		}
-		rows.add(new Row(KIND_ROOT, null, null, null, rootKey, rootLabel, 0, y));
+		rows.add(new Row(KIND_ROOT, null, null, null, rootKey, rootLabel, 0, y, true));
 		y += ROW_H;
 		if (!expandedRoots.contains(rootKey)) {
 			return y;
 		}
 		for (String sourceId : sourceIds) {
-			rows.add(new Row(KIND_SOURCE, null, null, null, sourceId, sourceLabels.get(sourceId), 1, y));
+			rows.add(new Row(KIND_SOURCE, null, null, null, sourceId, sourceLabels.get(sourceId), 1, y, true));
 			y += ROW_H;
 			if (!expandedSources.contains(sourceId)) {
 				continue;
@@ -229,7 +229,7 @@ public class TaskManagerScreen extends Screen {
 		}
 		for (Map.Entry<String, List<Process>> cat : byCategory.entrySet()) {
 			String catKey = sourceId + "::" + cat.getKey();
-			rows.add(new Row(KIND_CATEGORY, null, null, null, catKey, cat.getKey(), 2, y));
+			rows.add(new Row(KIND_CATEGORY, null, null, null, catKey, cat.getKey(), 2, y, true));
 			y += ROW_H;
 			if (!expandedCategories.contains(catKey)) {
 				continue;
@@ -242,7 +242,7 @@ public class TaskManagerScreen extends Screen {
 				}
 				for (Map.Entry<String, List<Process>> sub : bySub.entrySet()) {
 					String subKey = catKey + "::" + sub.getKey();
-					rows.add(new Row(KIND_SUBCATEGORY, null, null, null, subKey, sub.getKey(), 3, y));
+					rows.add(new Row(KIND_SUBCATEGORY, null, null, null, subKey, sub.getKey(), 3, y, true));
 					y += ROW_H;
 					if (!expandedSubCategories.contains(subKey)) {
 						continue;
@@ -261,20 +261,21 @@ public class TaskManagerScreen extends Screen {
 	}
 
 	private int addProcessRows(List<Row> rows, Process p, int y) {
-		rows.add(new Row(KIND_PROCESS, p, null, null, null, null, 4, y));
+		boolean procHasChildren = !p.threads().isEmpty();
+		rows.add(new Row(KIND_PROCESS, p, null, null, null, null, 4, y, procHasChildren));
 		y += ROW_H;
 		if (expandedProcesses.contains(p.pid())) {
+			Map<String, List<MethodProfiler.MethodNode>> snapshot = methodSnapshot();
 			for (ThreadInfo t : p.threads()) {
-				rows.add(new Row(KIND_THREAD, p, t, null, null, null, 5, y));
+				List<MethodProfiler.MethodNode> methods = snapshot.get(t.threadName());
+				boolean threadHasChildren = methods != null && !methods.isEmpty();
+				rows.add(new Row(KIND_THREAD, p, t, null, null, null, 5, y, threadHasChildren));
 				y += ROW_H;
-				if (expandedThreads.contains(t.threadId())) {
-					List<MethodProfiler.MethodNode> methods = methodSnapshot().get(t.threadName());
-					if (methods != null) {
-						int limit = Math.min(6, methods.size());
-						for (int j = 0; j < limit; j++) {
-							rows.add(new Row(KIND_METHOD, p, t, methods.get(j), null, null, 6, y));
-							y += ROW_H;
-						}
+				if (expandedThreads.contains(t.threadId()) && methods != null) {
+					int limit = Math.min(6, methods.size());
+					for (int j = 0; j < limit; j++) {
+						rows.add(new Row(KIND_METHOD, p, t, methods.get(j), null, null, 6, y, false));
+						y += ROW_H;
 					}
 				}
 			}
@@ -300,6 +301,22 @@ public class TaskManagerScreen extends Screen {
 		int viewportHeight = listBottom() - listTop();
 		int maxScroll = Math.max(0, rowCount * ROW_H - viewportHeight);
 		scrollOffset = Math.min(Math.max(scrollOffset, 0), maxScroll);
+	}
+
+	/** 渲染右侧可视滚动条（滑轨 + 滑块），无滚动时隐藏。 */
+	private void renderScrollbar(GuiGraphicsExtractor graphics, int totalHeight) {
+		int viewportHeight = listBottom() - listTop();
+		if (totalHeight <= viewportHeight) {
+			return;
+		}
+		int trackX = this.width - 8;
+		int trackTop = listTop();
+		int trackH = listBottom() - trackTop;
+		graphics.fill(trackX, trackTop, trackX + 4, trackTop + trackH, 0xFF2A2A2A);
+		int thumbH = Math.max(20, trackH * viewportHeight / totalHeight);
+		int maxScroll = totalHeight - viewportHeight;
+		int thumbY = trackTop + (int) ((long) scrollOffset * (trackH - thumbH) / maxScroll);
+		graphics.fill(trackX, thumbY, trackX + 4, thumbY + thumbH, 0xFF7A7A7A);
 	}
 
 	/** 方法级快照（带 1s 缓存，避免渲染循环每帧重建大 Map）。 */
@@ -339,8 +356,8 @@ public class TaskManagerScreen extends Screen {
 					expandedCategories.contains(row.key()), textMuted());
 				case KIND_SUBCATEGORY -> renderGroupRow(graphics, row.label(), row.depth(), screenY,
 					expandedSubCategories.contains(row.key()), textMuted());
-				case KIND_PROCESS -> renderProcessRow(graphics, row.process(), row.depth(), x, screenY);
-				case KIND_THREAD -> renderThreadRow(graphics, row.thread(), row.depth(), x, screenY);
+				case KIND_PROCESS -> renderProcessRow(graphics, row.process(), row.depth(), x, screenY, row.hasChildren());
+				case KIND_THREAD -> renderThreadRow(graphics, row.thread(), row.depth(), x, screenY, row.hasChildren());
 				default -> tmText(graphics, String.format("    %s %.1f%%",
 					row.method().methodName(), row.method().cpuRatio()), x + 46 + row.depth() * 16, screenY, textMuted());
 			}
@@ -348,6 +365,7 @@ public class TaskManagerScreen extends Screen {
 		if (rows.isEmpty()) {
 			tmText(graphics, tr("taskmanager.empty"), x, top, textMuted());
 		}
+		renderScrollbar(graphics, rows.size() * ROW_H);
 	}
 
 	private void renderGroupRow(GuiGraphicsExtractor graphics, String label, int depth, int screenY,
@@ -357,13 +375,13 @@ public class TaskManagerScreen extends Screen {
 		tmText(graphics, label, x + 12, screenY, color);
 	}
 
-	private void renderProcessRow(GuiGraphicsExtractor graphics, Process p, int depth, int x, int screenY) {
+	private void renderProcessRow(GuiGraphicsExtractor graphics, Process p, int depth, int x, int screenY, boolean hasChildren) {
 		int ind = depth * 16;
 		if (p.pid() == selectedPid) {
 			graphics.fill(15, screenY - 1, x + 440, screenY + 13, accent());
 		}
 		boolean expanded = expandedProcesses.contains(p.pid());
-		tmText(graphics, expanded ? "v" : ">", x + ind, screenY, text());
+		tmText(graphics, hasChildren ? (expanded ? "v" : ">") : " ", x + ind, screenY, text());
 		tmText(graphics, String.valueOf(p.pid()), x + ind + 12, screenY, text());
 		tmText(graphics, p.name(), x + 50 + ind, screenY, text());
 		tmText(graphics, tr(stateKey(p.state())), x + 220 + ind, screenY, stateColor(p));
@@ -371,18 +389,18 @@ public class TaskManagerScreen extends Screen {
 		tmText(graphics, memoryText(p), x + 380 + ind, screenY, textMuted());
 	}
 
-	private void renderThreadRow(GuiGraphicsExtractor graphics, ThreadInfo thread, int depth, int x, int screenY) {
+	private void renderThreadRow(GuiGraphicsExtractor graphics, ThreadInfo thread, int depth, int x, int screenY, boolean hasChildren) {
 		int ind = depth * 16;
 		if (thread.threadId() == selectedThreadId) {
 			graphics.fill(15, screenY - 1, x + 440, screenY + 13, accent());
 		}
 		boolean expanded = expandedThreads.contains(thread.threadId());
-		tmText(graphics, expanded ? "v" : ">", x + ind, screenY, textMuted());
+		tmText(graphics, hasChildren ? (expanded ? "v" : ">") : " ", x + ind, screenY, textMuted());
 		String prefix = thread.daemon() ? "*" : "-";
 		tmText(graphics, prefix + " " + thread.threadName(), x + ind + 12, screenY, textMuted());
-		tmText(graphics, stateText(thread.state()), x + 170 + ind, screenY, stateColor2(thread.state()));
-		tmText(graphics, cpuText2(thread), x + 250 + ind, screenY, heatColor(thread.usage().cpuUsage()));
-		tmText(graphics, allocText(thread.allocatedBytes()), x + 320 + ind, screenY, textMuted());
+		tmText(graphics, stateText(thread.state()), x + 220 + ind, screenY, stateColor2(thread.state()));
+		tmText(graphics, cpuText2(thread), x + 300 + ind, screenY, heatColor(thread.usage().cpuUsage()));
+		tmText(graphics, "N/A", x + 380 + ind, screenY, textMuted());
 	}
 
 	private static String cpuText2(ThreadInfo t) {
@@ -435,7 +453,7 @@ public class TaskManagerScreen extends Screen {
 		}
 		if (selected == null) {
 			tmText(graphics, tr("taskmanager.hint"), 20, panelTop + 8, textMuted());
-			// 日志/设置按钮不依赖选中进程，始终渲染可用
+			renderActionButton(graphics, tr("taskmanager.btn.run_new_task"), 156, panelTop + 50, 84);
 			renderActionButton(graphics, tr("taskmanager.btn.logs"), 20, panelTop + 74);
 			renderActionButton(graphics, tr("taskmanager.btn.settings"), 78, panelTop + 74);
 			return;
@@ -761,7 +779,7 @@ public class TaskManagerScreen extends Screen {
 				}
 			}
 		}
-		// 日志/设置按钮（不依赖选中进程，始终可用）
+		// 日志/设置/运行新任务 按钮（不依赖选中进程，始终可用）
 		{
 			int panelTop = panelTop();
 			if (hit(mx, my, 20, panelTop + 74)) {
@@ -770,6 +788,14 @@ public class TaskManagerScreen extends Screen {
 			}
 			if (hit(mx, my, 78, panelTop + 74)) {
 				showSettings = !showSettings;
+				return true;
+			}
+			// 运行新任务：选中进程则启动；未选中则消费事件（避免误触底层列表）
+			if (hit(mx, my, 156, panelTop + 50, 84)) {
+				Process runSelected = selectedPid < 0 ? null : ProcessManager.getInstance().get(selectedPid);
+				if (runSelected != null) {
+					OperationEngine.getInstance().start(runSelected, "本地用户");
+				}
 				return true;
 			}
 		}
@@ -829,10 +855,6 @@ public class TaskManagerScreen extends Screen {
 				OperationEngine.getInstance().setPriority(selected, Math.min(5, selected.priority() + 1), "本地用户");
 				return true;
 			}
-			if (hit(mx, my, 156, panelTop + 50, 84)) {
-				OperationEngine.getInstance().start(selected, "本地用户");
-				return true;
-			}
 		}
 		return super.mouseClicked(event, doubleClick);
 	}
@@ -865,6 +887,27 @@ public class TaskManagerScreen extends Screen {
 		int maxScroll = Math.max(0, buildRows().size() * ROW_H - viewportHeight);
 		scrollOffset = Math.clamp(scrollOffset - (int) scrollY * ROW_H, 0, maxScroll);
 		return true;
+	}
+
+	@Override
+	public boolean mouseDragged(MouseButtonEvent event, double dx, double dy) {
+		// 拖动右侧滚动条滑块
+		int mx = (int) event.x();
+		int trackX = this.width - 8;
+		if (mx >= trackX - 6 && mx <= trackX + 10) {
+			int totalHeight = buildRows().size() * ROW_H;
+			int viewportHeight = listBottom() - listTop();
+			if (totalHeight > viewportHeight) {
+				int trackH = listBottom() - listTop();
+				int thumbH = Math.max(20, trackH * viewportHeight / totalHeight);
+				int maxScroll = totalHeight - viewportHeight;
+				int my = (int) event.y();
+				scrollOffset = (int) ((long) (my - listTop() - thumbH / 2) * maxScroll / (trackH - thumbH));
+				clampScrollToContent(buildRows().size());
+			}
+			return true;
+		}
+		return super.mouseDragged(event, dx, dy);
 	}
 
 	private static boolean hit(double mx, double my, int x, int y) {
@@ -921,7 +964,18 @@ public class TaskManagerScreen extends Screen {
 			return tr(stateKey(p.state())).contains(st) || stateKey(p.state()).contains(st);
 		}
 		return p.name().toLowerCase(java.util.Locale.ROOT).contains(lower)
-			|| String.valueOf(p.pid()).equals(keyword);
+			|| String.valueOf(p.pid()).equals(keyword)
+			|| hasThreadMatching(p, lower);
+	}
+
+	/** 是否某线程名匹配关键词（支持按线程名搜索）。 */
+	private static boolean hasThreadMatching(Process p, String lower) {
+		for (ThreadInfo t : p.threads()) {
+			if (t.threadName().toLowerCase(java.util.Locale.ROOT).contains(lower)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private static boolean isClient(Process p) {
