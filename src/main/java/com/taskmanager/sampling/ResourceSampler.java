@@ -171,6 +171,28 @@ public final class ResourceSampler {
 		return load < 0 ? Double.NaN : load * 100.0;
 	}
 
+	/** 系统整体 CPU 负载（百分比 0~100，不可用返回 NaN）。 */
+	public double systemCpuLoad() {
+		double load = osBean.getSystemCpuLoad();
+		return load < 0 ? Double.NaN : load * 100.0;
+	}
+
+	/** 堆内存已使用（字节），供概览面板使用。 */
+	public long heapUsed() {
+		return memorySampler.heapUsed();
+	}
+
+	/** 非堆内存已使用（字节）。 */
+	public long nonHeapUsed() {
+		return memorySampler.nonHeapUsed();
+	}
+
+	/** GPU 使用率（百分比 0~100，不可用返回 NaN）。 */
+	public double gpuUsage() {
+		GpuSampler gpu = gpuSampler;
+		return gpu != null && gpu.isAvailable() ? gpu.sampleGpuUsage() : Double.NaN;
+	}
+
 	/** 方法级 CPU 快照：线程名 → 方法节点列表（按 CPU 占比降序）。 */
 	public Map<String, List<MethodProfiler.MethodNode>> methodSnapshot() {
 		return methodProfiler.getSnapshot();

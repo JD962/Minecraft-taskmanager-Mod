@@ -14,6 +14,7 @@ import com.taskmanager.sampling.MethodProfiler;
 import com.taskmanager.sampling.ResourceSampler;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -39,10 +40,18 @@ public class TaskManagerScreen extends Screen {
 	private int activeTab = TAB_ALL;
 	private EditBox searchBox;
 	private int selectedPid = -1;
+	private long selectedThreadId = -1;
 	private final Set<Integer> expandedProcesses = new HashSet<>();
 	private final Set<Long> expandedThreads = new HashSet<>();
+	private final Set<String> expandedSources = new HashSet<>();
+	private final Set<String> expandedCategories = new HashSet<>();
+	private final Set<String> expandedSubCategories = new HashSet<>();
+	private boolean treeInitialized = false;
 	private int scrollOffset = 0;
 	private boolean showSettings = false;
+	/** 方法级采样快照缓存（1s 刷新一次，避免渲染循环每帧重建大 Map 导致堆压力）。 */
+	private Map<String, List<MethodProfiler.MethodNode>> cachedMethodSnapshot = Map.of();
+	private long lastSnapshotTime = 0;
 
 	public TaskManagerScreen() {
 		super(Component.translatable("taskmanager.title"));
@@ -73,6 +82,7 @@ public class TaskManagerScreen extends Screen {
 		renderThemeButton(graphics);
 		renderCloseButton(graphics);
 		renderTabs(graphics);
+		renderOverview(graphics);
 		renderProcessList(graphics);
 		renderDetailPanel(graphics);
 		renderLogs(graphics);
@@ -112,46 +122,119 @@ public class TaskManagerScreen extends Screen {
 		}
 	}
 
-	// ===== 进程列表 =====
-	private static final int ROW_H = 14;
-	private static final int KIND_PROCESS = 0;
-	private static final int KIND_THREAD = 1;
-	private static final int KIND_METHOD = 2;
-
-	/** 扁平化可视行：渲染与命中测试共用，保证点击不偏移。 */
-	private record Row(int kind, Process process, ThreadInfo thread, MethodProfiler.MethodNode method, int y) {
+	// ===== 系统资源概览 =====
+	private void renderOverview(GuiGraphicsExtractor graphics) {
+		ResourceSampler sampler = ResourceSampler.getInstance();
+		double cpu = sampler.processCpuLoad();
+		double sysCpu = sampler.systemCpuLoad();
+		long heap = sampler.heapUsed();
+		double gpu = sampler.gpuUsage();
+		String cpuStr = Double.isNaN(cpu) ? "N/A" : String.format("%.1f%%", cpu);
+		String sysStr = Double.isNaN(sysCpu) ? "N/A" : String.format("%.1f%%", sysCpu);
+		String memStr = formatBytes(heap);
+		String gpuStr = Double.isNaN(gpu) ? "N/A" : String.format("%.1f%%", gpu);
+		tmText(graphics, String.format("进程CPU %s | 系统CPU %s | 堆 %s | GPU %s", cpuStr, sysStr, memStr, gpuStr),
+			260, 40, textMuted());
 	}
 
-	/** 构建扁平化行布局（含展开的线程与方法级行），每行记录相对 listTop 的 y 偏移。 */
+	// ===== 进程树 =====
+	private static final int ROW_H = 14;
+	private static final int KIND_SOURCE = 0;
+	private static final int KIND_CATEGORY = 1;
+	private static final int KIND_SUBCATEGORY = 2;
+	private static final int KIND_PROCESS = 3;
+	private static final int KIND_THREAD = 4;
+	private static final int KIND_METHOD = 5;
+
+	/** 扁平化可视行：渲染与命中测试共用，保证点击不偏移。key 为分组行的展开键。 */
+	private record Row(int kind, Process process, ThreadInfo thread, MethodProfiler.MethodNode method,
+	                   String key, int depth, int y) {
+	}
+
+	/** 构建树形行布局：来源 → 类别 → 细分类（实体）→ 进程 → 线程 → 方法。 */
 	private List<Row> buildRows() {
 		List<Process> processes = filteredProcesses();
-		Map<String, List<MethodProfiler.MethodNode>> snapshot = null;
+		// 首次构建时默认展开来源与类别，让用户直接看到进程层
+		if (!treeInitialized) {
+			treeInitialized = true;
+			for (Process p : processes) {
+				expandedSources.add(p.source().displayName());
+				expandedCategories.add(p.source().displayName() + "::"
+					+ (p.category() == ProcessCategory.ENTITY ? "实体类" : "全局类"));
+			}
+		}
+		Map<String, List<Process>> bySource = new LinkedHashMap<>();
+		for (Process p : processes) {
+			bySource.computeIfAbsent(p.source().displayName(), k -> new ArrayList<>()).add(p);
+		}
 		List<Row> rows = new ArrayList<>();
 		int y = 0;
-		for (Process p : processes) {
-			rows.add(new Row(KIND_PROCESS, p, null, null, y));
+		for (Map.Entry<String, List<Process>> src : bySource.entrySet()) {
+			String sourceName = src.getKey();
+			rows.add(new Row(KIND_SOURCE, null, null, null, sourceName, 0, y));
 			y += ROW_H;
-			if (expandedProcesses.contains(p.pid())) {
-				for (ThreadInfo t : p.threads()) {
-					rows.add(new Row(KIND_THREAD, p, t, null, y));
-					y += ROW_H;
-					if (expandedThreads.contains(t.threadId())) {
-						if (snapshot == null) {
-							snapshot = ResourceSampler.getInstance().methodSnapshot();
+			if (!expandedSources.contains(sourceName)) {
+				continue;
+			}
+			Map<String, List<Process>> byCategory = new LinkedHashMap<>();
+			for (Process p : src.getValue()) {
+				byCategory.computeIfAbsent(p.category() == ProcessCategory.ENTITY ? "实体类" : "全局类",
+					k -> new ArrayList<>()).add(p);
+			}
+			for (Map.Entry<String, List<Process>> cat : byCategory.entrySet()) {
+				String catKey = sourceName + "::" + cat.getKey();
+				rows.add(new Row(KIND_CATEGORY, null, null, null, cat.getKey(), 1, y));
+				y += ROW_H;
+				if (!expandedCategories.contains(catKey)) {
+					continue;
+				}
+				if ("实体类".equals(cat.getKey())) {
+					Map<String, List<Process>> bySub = new LinkedHashMap<>();
+					for (Process p : cat.getValue()) {
+						String sub = p.subCategory() == null ? "其他实体" : p.subCategory();
+						bySub.computeIfAbsent(sub, k -> new ArrayList<>()).add(p);
+					}
+					for (Map.Entry<String, List<Process>> sub : bySub.entrySet()) {
+						String subKey = catKey + "::" + sub.getKey();
+						rows.add(new Row(KIND_SUBCATEGORY, null, null, null, sub.getKey(), 2, y));
+						y += ROW_H;
+						if (!expandedSubCategories.contains(subKey)) {
+							continue;
 						}
-						List<MethodProfiler.MethodNode> methods = snapshot.get(t.threadName());
-						if (methods != null) {
-							int limit = Math.min(6, methods.size());
-							for (int j = 0; j < limit; j++) {
-								rows.add(new Row(KIND_METHOD, p, t, methods.get(j), y));
-								y += ROW_H;
-							}
+						for (Process p : sub.getValue()) {
+							y = addProcessRows(rows, p, y);
 						}
+					}
+				} else {
+					for (Process p : cat.getValue()) {
+						y = addProcessRows(rows, p, y);
 					}
 				}
 			}
 		}
 		return rows;
+	}
+
+	private int addProcessRows(List<Row> rows, Process p, int y) {
+		rows.add(new Row(KIND_PROCESS, p, null, null, null, 3, y));
+		y += ROW_H;
+		if (expandedProcesses.contains(p.pid())) {
+			for (ThreadInfo t : p.threads()) {
+				rows.add(new Row(KIND_THREAD, p, t, null, null, 4, y));
+				y += ROW_H;
+				if (expandedThreads.contains(t.threadId())) {
+					List<MethodProfiler.MethodNode> methods = methodSnapshot().get(t.threadName());
+					if (methods != null) {
+						int limit = Math.min(6, methods.size());
+						for (int j = 0; j < limit; j++) {
+							rows.add(new Row(KIND_METHOD, p, t, methods.get(j), null, 5, y));
+							y += ROW_H;
+						}
+					}
+				}
+			}
+		}
+		return y;
 	}
 
 	private int listTop() {
@@ -160,6 +243,16 @@ public class TaskManagerScreen extends Screen {
 
 	private int listBottom() {
 		return this.height - 150;
+	}
+
+	/** 方法级快照（带 1s 缓存，避免渲染循环每帧重建大 Map）。 */
+	private Map<String, List<MethodProfiler.MethodNode>> methodSnapshot() {
+		long now = System.currentTimeMillis();
+		if (now - lastSnapshotTime > 1000) {
+			cachedMethodSnapshot = ResourceSampler.getInstance().methodSnapshot();
+			lastSnapshotTime = now;
+		}
+		return cachedMethodSnapshot;
 	}
 
 	private void renderProcessList(GuiGraphicsExtractor graphics) {
@@ -180,10 +273,16 @@ public class TaskManagerScreen extends Screen {
 				continue;
 			}
 			switch (row.kind()) {
-				case KIND_PROCESS -> renderProcessRow(graphics, row.process(), x, screenY);
-				case KIND_THREAD -> renderThreadRow(graphics, row.thread(), x + 30, screenY);
+				case KIND_SOURCE -> renderGroupRow(graphics, row.key(), 0, screenY,
+					expandedSources.contains(row.key()), text());
+				case KIND_CATEGORY -> renderGroupRow(graphics, row.key(), 1, screenY,
+					expandedCategories.contains(row.key()), textMuted());
+				case KIND_SUBCATEGORY -> renderGroupRow(graphics, row.key(), 2, screenY,
+					expandedSubCategories.contains(row.key()), textMuted());
+				case KIND_PROCESS -> renderProcessRow(graphics, row.process(), row.depth(), x, screenY);
+				case KIND_THREAD -> renderThreadRow(graphics, row.thread(), row.depth(), x, screenY);
 				default -> tmText(graphics, String.format("    %s %.1f%%",
-					row.method().methodName(), row.method().cpuRatio()), x + 46, screenY, textMuted());
+					row.method().methodName(), row.method().cpuRatio()), x + 46 + row.depth() * 16, screenY, textMuted());
 			}
 		}
 		if (rows.isEmpty()) {
@@ -191,24 +290,32 @@ public class TaskManagerScreen extends Screen {
 		}
 	}
 
-	private void renderProcessRow(GuiGraphicsExtractor graphics, Process p, int x, int screenY) {
+	private void renderGroupRow(GuiGraphicsExtractor graphics, String label, int depth, int screenY,
+	                            boolean expanded, int color) {
+		int x = 20 + depth * 16;
+		tmText(graphics, (expanded ? "v " : "> ") + label, x, screenY, color);
+	}
+
+	private void renderProcessRow(GuiGraphicsExtractor graphics, Process p, int depth, int x, int screenY) {
+		int ind = depth * 16;
 		if (p.pid() == selectedPid) {
 			graphics.fill(15, screenY - 1, x + 440, screenY + 13, accent());
 		}
 		boolean expanded = expandedProcesses.contains(p.pid());
-		tmText(graphics, (expanded ? "v " : "> ") + p.pid(), x, screenY, text());
-		tmText(graphics, p.name(), x + 50, screenY, text());
-		tmText(graphics, tr(stateKey(p.state())), x + 220, screenY, stateColor(p));
-		tmText(graphics, cpuText(p), x + 300, screenY, heatColor(p.usage().cpuUsage()));
-		tmText(graphics, memoryText(p), x + 380, screenY, textMuted());
+		tmText(graphics, (expanded ? "v " : "> ") + p.pid(), x + ind, screenY, text());
+		tmText(graphics, p.name(), x + 50 + ind, screenY, text());
+		tmText(graphics, tr(stateKey(p.state())), x + 220 + ind, screenY, stateColor(p));
+		tmText(graphics, cpuText(p), x + 300 + ind, screenY, heatColor(p.usage().cpuUsage()));
+		tmText(graphics, memoryText(p), x + 380 + ind, screenY, textMuted());
 	}
 
-	private void renderThreadRow(GuiGraphicsExtractor graphics, ThreadInfo thread, int x, int screenY) {
+	private void renderThreadRow(GuiGraphicsExtractor graphics, ThreadInfo thread, int depth, int x, int screenY) {
+		int ind = depth * 16;
 		String prefix = thread.daemon() ? "* " : "- ";
-		tmText(graphics, prefix + thread.threadName(), x, screenY, textMuted());
-		tmText(graphics, stateText(thread.state()), x + 170, screenY, stateColor2(thread.state()));
-		tmText(graphics, cpuText2(thread), x + 250, screenY, heatColor(thread.usage().cpuUsage()));
-		tmText(graphics, allocText(thread.allocatedBytes()), x + 320, screenY, textMuted());
+		tmText(graphics, prefix + thread.threadName(), x + ind, screenY, textMuted());
+		tmText(graphics, stateText(thread.state()), x + 170 + ind, screenY, stateColor2(thread.state()));
+		tmText(graphics, cpuText2(thread), x + 250 + ind, screenY, heatColor(thread.usage().cpuUsage()));
+		tmText(graphics, allocText(thread.allocatedBytes()), x + 320 + ind, screenY, textMuted());
 	}
 
 	private static String cpuText2(ThreadInfo t) {
@@ -252,8 +359,13 @@ public class TaskManagerScreen extends Screen {
 	// ===== 详情面板 + 操作按钮 =====
 	private void renderDetailPanel(GuiGraphicsExtractor graphics) {
 		Process selected = selectedPid < 0 ? null : ProcessManager.getInstance().get(selectedPid);
+		ThreadInfo selectedThread = selectedThreadId < 0 ? null : findThread(selectedThreadId);
 		int panelTop = this.height - 150;
 		graphics.fill(0, panelTop, this.width, this.height, panel());
+		if (selectedThread != null) {
+			renderThreadDetail(graphics, selectedThread, panelTop);
+			return;
+		}
 		if (selected == null) {
 			tmText(graphics, tr("taskmanager.hint"), 20, panelTop + 8, textMuted());
 			// 日志/设置按钮不依赖选中进程，始终渲染可用
@@ -280,6 +392,51 @@ public class TaskManagerScreen extends Screen {
 		renderActionButton(graphics, tr("taskmanager.btn.run_new_task"), 156, panelTop + 50, 84);
 		renderActionButton(graphics, tr("taskmanager.btn.logs"), 20, panelTop + 74);
 		renderActionButton(graphics, tr("taskmanager.btn.settings"), 78, panelTop + 74);
+	}
+
+	private void renderThreadDetail(GuiGraphicsExtractor graphics, ThreadInfo t, int panelTop) {
+		String alloc = t.allocatedBytes() >= 0 ? " | 分配 " + allocText(t.allocatedBytes()) : "";
+		tmText(graphics, String.format("线程 %s (#%d) | %s | %s | %s %d | CPU %s%s",
+			t.threadName(), t.threadId(), stateText(t.state()),
+			t.daemon() ? "守护" : "非守护", tr("taskmanager.priority"), t.priority(),
+			cpuText2(t), alloc), 20, panelTop + 8, text());
+		if (t.topFrame() != null) {
+			tmText(graphics, "栈顶: " + t.topFrame(), 20, panelTop + 24, textMuted());
+		}
+		renderActionButton(graphics, tr("taskmanager.btn.priority_down"), 20, panelTop + 44);
+		renderActionButton(graphics, tr("taskmanager.btn.priority_up"), 88, panelTop + 44);
+		tmText(graphics, "线程暂停/终止不可用（JVM 无安全挂起 API）", 156, panelTop + 48, textMuted());
+		renderActionButton(graphics, tr("taskmanager.btn.logs"), 20, panelTop + 74);
+		renderActionButton(graphics, tr("taskmanager.btn.settings"), 78, panelTop + 74);
+	}
+
+	private ThreadInfo findThread(long threadId) {
+		for (Process p : ProcessManager.getInstance().all()) {
+			for (ThreadInfo t : p.threads()) {
+				if (t.threadId() == threadId) {
+					return t;
+				}
+			}
+		}
+		return null;
+	}
+
+	/** 调整线程优先级：档位 delta 映射到 Java Thread 优先级（MIN=1 ~ MAX=10）。 */
+	private static void adjustThreadPriority(long threadId, int delta) {
+		Thread thread = findJavaThread(threadId);
+		if (thread != null) {
+			int newPrio = Math.clamp(thread.getPriority() + delta, Thread.MIN_PRIORITY, Thread.MAX_PRIORITY);
+			thread.setPriority(newPrio);
+		}
+	}
+
+	private static Thread findJavaThread(long threadId) {
+		for (Thread t : Thread.getAllStackTraces().keySet()) {
+			if (t.threadId() == threadId) {
+				return t;
+			}
+		}
+		return null;
 	}
 
 	private void renderActionButton(GuiGraphicsExtractor graphics, String label, int x, int y) {
@@ -369,101 +526,7 @@ public class TaskManagerScreen extends Screen {
 			darkMode = !darkMode;
 			return true;
 		}
-		// 页签
-		for (int i = 0; i < TABS.length; i++) {
-			int x = 20 + i * 76;
-			if (mx >= x && mx <= x + 72 && my >= 34 && my <= 54) {
-				activeTab = i;
-				scrollOffset = 0;
-				return true;
-			}
-		}
-		// 进程/线程列表点击（选中/展开）——用与渲染一致的扁平化布局做命中测试，避免偏移
-		List<Row> rows = buildRows();
-		int top = listTop();
-		int bottom = listBottom();
-		// 鼠标必须在列表区域内（底部面板/按钮在 bottom 以下）
-		if (my < bottom) {
-			for (Row row : rows) {
-				int screenY = top + row.y() - scrollOffset;
-				if (screenY >= bottom) {
-					break; // 行按 y 递增，超出列表底界后不再匹配
-				}
-				int hitTop = Math.max(screenY, top);
-				int hitBottom = Math.min(screenY + ROW_H, bottom);
-				if (my >= hitTop && my < hitBottom) {
-					if (row.kind() == KIND_PROCESS) {
-						Process p = row.process();
-						if (selectedPid == p.pid()) {
-							if (expandedProcesses.contains(p.pid())) {
-								expandedProcesses.remove(p.pid());
-							} else {
-								expandedProcesses.add(p.pid());
-							}
-						}
-						selectedPid = p.pid();
-						return true;
-					} else if (row.kind() == KIND_THREAD) {
-						ThreadInfo t = row.thread();
-						if (expandedThreads.contains(t.threadId())) {
-							expandedThreads.remove(t.threadId());
-						} else {
-							expandedThreads.add(t.threadId());
-						}
-						return true;
-					}
-				}
-			}
-		}
-		// 日志/设置按钮（不依赖选中进程，始终可用）
-		{
-			int panelTop = this.height - 150;
-			if (hit(mx, my, 20, panelTop + 74)) {
-				showLogs = !showLogs;
-				return true;
-			}
-			if (hit(mx, my, 78, panelTop + 74)) {
-				showSettings = !showSettings;
-				return true;
-			}
-		}
-		// 进程操作按钮（需选中进程）
-		Process selected = selectedPid < 0 ? null : ProcessManager.getInstance().get(selectedPid);
-		if (selected != null) {
-			int panelTop = this.height - 150;
-			if (hit(mx, my, 20, panelTop + 26)) {
-				OperationEngine.getInstance().pause(selected, "本地用户");
-				return true;
-			}
-			if (hit(mx, my, 78, panelTop + 26)) {
-				OperationEngine.getInstance().resume(selected, "本地用户");
-				return true;
-			}
-			if (hit(mx, my, 136, panelTop + 26)) {
-				OperationEngine.getInstance().terminate(selected, "本地用户");
-				return true;
-			}
-			if (hit(mx, my, 194, panelTop + 26)) {
-				OperationEngine.getInstance().forceTerminate(selected, "本地用户");
-				return true;
-			}
-			if (hit(mx, my, 274, panelTop + 26)) {
-				OperationEngine.getInstance().restart(selected, "本地用户");
-				return true;
-			}
-			if (hit(mx, my, 20, panelTop + 50)) {
-				OperationEngine.getInstance().setPriority(selected, Math.max(1, selected.priority() - 1), "本地用户");
-				return true;
-			}
-			if (hit(mx, my, 88, panelTop + 50)) {
-				OperationEngine.getInstance().setPriority(selected, Math.min(5, selected.priority() + 1), "本地用户");
-				return true;
-			}
-			if (hit(mx, my, 156, panelTop + 50, 84)) {
-				OperationEngine.getInstance().start(selected, "本地用户");
-				return true;
-			}
-		}
+		// 设置面板（模态，优先于列表命中）：打开时先处理面板内按钮，避免被底层列表拦截
 		if (showSettings) {
 			int cx = this.width / 2 - 120;
 			int cy = this.height / 2 - 100;
@@ -502,6 +565,151 @@ public class TaskManagerScreen extends Screen {
 			}
 			if (hit(mx, my, cx + 92, cy + 172)) {
 				showSettings = false;
+				return true;
+			}
+			// 点击面板外区域：关闭设置面板并消费事件（模态）
+			if (mx < cx || mx > cx + 240 || my < cy || my > cy + 200) {
+				showSettings = false;
+				return true;
+			}
+		}
+		// 页签
+		for (int i = 0; i < TABS.length; i++) {
+			int x = 20 + i * 76;
+			if (mx >= x && mx <= x + 72 && my >= 34 && my <= 54) {
+				activeTab = i;
+				scrollOffset = 0;
+				return true;
+			}
+		}
+		// 进程/线程列表点击（选中/展开）——用与渲染一致的扁平化布局做命中测试，避免偏移
+		List<Row> rows = buildRows();
+		int top = listTop();
+		int bottom = listBottom();
+		// 鼠标必须在列表区域内（底部面板/按钮在 bottom 以下）
+		if (my < bottom) {
+			for (Row row : rows) {
+				int screenY = top + row.y() - scrollOffset;
+				if (screenY >= bottom) {
+					break; // 行按 y 递增，超出列表底界后不再匹配
+				}
+				int hitTop = Math.max(screenY, top);
+				int hitBottom = Math.min(screenY + ROW_H, bottom);
+				if (my >= hitTop && my < hitBottom) {
+					switch (row.kind()) {
+						case KIND_SOURCE -> {
+							if (expandedSources.contains(row.key())) {
+								expandedSources.remove(row.key());
+							} else {
+								expandedSources.add(row.key());
+							}
+							return true;
+						}
+						case KIND_CATEGORY -> {
+							if (expandedCategories.contains(row.key())) {
+								expandedCategories.remove(row.key());
+							} else {
+								expandedCategories.add(row.key());
+							}
+							return true;
+						}
+						case KIND_SUBCATEGORY -> {
+							if (expandedSubCategories.contains(row.key())) {
+								expandedSubCategories.remove(row.key());
+							} else {
+								expandedSubCategories.add(row.key());
+							}
+							return true;
+						}
+						case KIND_PROCESS -> {
+							Process p = row.process();
+							selectedThreadId = -1;
+							if (selectedPid == p.pid()) {
+								if (expandedProcesses.contains(p.pid())) {
+									expandedProcesses.remove(p.pid());
+								} else {
+									expandedProcesses.add(p.pid());
+								}
+							}
+							selectedPid = p.pid();
+							return true;
+						}
+						case KIND_THREAD -> {
+							ThreadInfo t = row.thread();
+							selectedThreadId = t.threadId();
+							selectedPid = -1;
+							if (expandedThreads.contains(t.threadId())) {
+								expandedThreads.remove(t.threadId());
+							} else {
+								expandedThreads.add(t.threadId());
+							}
+							return true;
+						}
+						default -> {
+							// 方法行不可点击
+						}
+					}
+				}
+			}
+		}
+		// 日志/设置按钮（不依赖选中进程，始终可用）
+		{
+			int panelTop = this.height - 150;
+			if (hit(mx, my, 20, panelTop + 74)) {
+				showLogs = !showLogs;
+				return true;
+			}
+			if (hit(mx, my, 78, panelTop + 74)) {
+				showSettings = !showSettings;
+				return true;
+			}
+		}
+		// 线程操作按钮（选中线程时，优先级调整可用）
+		if (selectedThreadId >= 0) {
+			int panelTop = this.height - 150;
+			if (hit(mx, my, 20, panelTop + 44)) {
+				adjustThreadPriority(selectedThreadId, -1);
+				return true;
+			}
+			if (hit(mx, my, 88, panelTop + 44)) {
+				adjustThreadPriority(selectedThreadId, 1);
+				return true;
+			}
+		}
+		// 进程操作按钮（需选中进程）
+		Process selected = selectedPid < 0 ? null : ProcessManager.getInstance().get(selectedPid);
+		if (selected != null) {
+			int panelTop = this.height - 150;
+			if (hit(mx, my, 20, panelTop + 26)) {
+				OperationEngine.getInstance().pause(selected, "本地用户");
+				return true;
+			}
+			if (hit(mx, my, 78, panelTop + 26)) {
+				OperationEngine.getInstance().resume(selected, "本地用户");
+				return true;
+			}
+			if (hit(mx, my, 136, panelTop + 26)) {
+				OperationEngine.getInstance().terminate(selected, "本地用户");
+				return true;
+			}
+			if (hit(mx, my, 194, panelTop + 26)) {
+				OperationEngine.getInstance().forceTerminate(selected, "本地用户");
+				return true;
+			}
+			if (hit(mx, my, 274, panelTop + 26)) {
+				OperationEngine.getInstance().restart(selected, "本地用户");
+				return true;
+			}
+			if (hit(mx, my, 20, panelTop + 50)) {
+				OperationEngine.getInstance().setPriority(selected, Math.max(1, selected.priority() - 1), "本地用户");
+				return true;
+			}
+			if (hit(mx, my, 88, panelTop + 50)) {
+				OperationEngine.getInstance().setPriority(selected, Math.min(5, selected.priority() + 1), "本地用户");
+				return true;
+			}
+			if (hit(mx, my, 156, panelTop + 50, 84)) {
+				OperationEngine.getInstance().start(selected, "本地用户");
 				return true;
 			}
 		}
@@ -558,7 +766,8 @@ public class TaskManagerScreen extends Screen {
 	// ===== 过滤与格式化 =====
 	private List<Process> filteredProcesses() {
 		List<Process> all = new ArrayList<>(ProcessManager.getInstance().all());
-		String keyword = searchBox == null ? "" : searchBox.getValue().trim().toLowerCase();
+		String keyword = searchBox == null ? "" : searchBox.getValue().trim();
+		String lower = keyword.toLowerCase(java.util.Locale.ROOT);
 		List<Process> result = new ArrayList<>();
 		for (Process p : all) {
 			if (activeTab == TAB_CLIENT && !isClient(p)) {
@@ -567,15 +776,31 @@ public class TaskManagerScreen extends Screen {
 			if (activeTab == TAB_SERVER && !isServer(p)) {
 				continue;
 			}
-			if (!keyword.isEmpty()
-				&& !p.name().toLowerCase().contains(keyword)
-				&& !String.valueOf(p.pid()).equals(keyword)) {
+			if (!matchesFilter(p, lower, keyword)) {
 				continue;
 			}
 			result.add(p);
 		}
 		result.sort((a, b) -> Integer.compare(a.pid(), b.pid()));
 		return result;
+	}
+
+	/** 搜索筛选：支持 `来源:xxx` / `状态:xxx` 前缀条件，否则按名称/PID 模糊匹配。 */
+	private boolean matchesFilter(Process p, String lower, String keyword) {
+		if (lower.isEmpty()) {
+			return true;
+		}
+		if (lower.startsWith("来源:") || lower.startsWith("source:")) {
+			String src = lower.substring(lower.indexOf(':') + 1).trim();
+			return p.source().displayName().toLowerCase(java.util.Locale.ROOT).contains(src)
+				|| p.source().id().toLowerCase(java.util.Locale.ROOT).contains(src);
+		}
+		if (lower.startsWith("状态:") || lower.startsWith("state:")) {
+			String st = lower.substring(lower.indexOf(':') + 1).trim();
+			return tr(stateKey(p.state())).contains(st) || stateKey(p.state()).contains(st);
+		}
+		return p.name().toLowerCase(java.util.Locale.ROOT).contains(lower)
+			|| String.valueOf(p.pid()).equals(keyword);
 	}
 
 	private static boolean isClient(Process p) {

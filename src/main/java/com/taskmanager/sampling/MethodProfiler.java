@@ -30,6 +30,10 @@ public final class MethodProfiler {
 	private static final long MIN_PERIOD_MS = 10;
 	/** 方法级采样周期上限（刷新频率极慢时的最低采样开销）。 */
 	private static final long MAX_PERIOD_MS = 100;
+	/** 采样线程数上限：防止动态线程名导致键无界增长。 */
+	private static final int MAX_THREADS = 256;
+	/** 每个线程的方法条目上限：防止 lambda/隐藏类等动态类名导致键无界增长。 */
+	private static final int MAX_METHODS_PER_THREAD = 2048;
 
 	private final ConcurrentMap<String, ConcurrentMap<String, Long>> methodCounts = new ConcurrentHashMap<>();
 	private final ConcurrentMap<String, Long> threadTotal = new ConcurrentHashMap<>();
@@ -158,7 +162,14 @@ public final class MethodProfiler {
 			}
 			RecordedMethod method = top.getMethod();
 			String key = method.getType().getName() + "." + method.getName();
+			// 上限保护：动态线程名 / lambda / 隐藏类名会导致键无界增长，超过上限拒绝新键
+			if (methodCounts.size() >= MAX_THREADS && !methodCounts.containsKey(threadName)) {
+				return;
+			}
 			ConcurrentMap<String, Long> counts = methodCounts.computeIfAbsent(threadName, k -> new ConcurrentHashMap<>());
+			if (counts.size() >= MAX_METHODS_PER_THREAD && !counts.containsKey(key)) {
+				return;
+			}
 			counts.merge(key, 1L, Long::sum);
 			threadTotal.merge(threadName, 1L, Long::sum);
 		} catch (Exception ignored) {
