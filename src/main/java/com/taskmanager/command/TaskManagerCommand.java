@@ -261,10 +261,15 @@ public final class TaskManagerCommand {
 		}
 		for (ThreadInfo t : threads) {
 			String nid = t.nativeId() >= 0 ? "0x" + Long.toHexString(t.nativeId()) : "N/A";
-			send(ctx, String.format("线程 #%d (nid=%s) | %s | %s | 优先级 %d",
-				t.threadId(), nid, t.threadName(), t.state(), t.priority()));
+			send(ctx, String.format("线程 #%d (nid=%s) | %s | %s | 优先级 %d | CPU %s | 阻塞 %d 等待 %d",
+				t.threadId(), nid, t.threadName(), t.state(), t.priority(),
+				cpuText(t.usage().cpuUsage()), t.blockedCount(), t.waitedCount()));
 		}
 		return threads.size();
+	}
+
+	private static String cpuText(double cpu) {
+		return Double.isNaN(cpu) ? "N/A" : String.format("%.1f%%", cpu);
 	}
 
 	private static int pauseThread(CommandContext<CommandSourceStack> ctx) {

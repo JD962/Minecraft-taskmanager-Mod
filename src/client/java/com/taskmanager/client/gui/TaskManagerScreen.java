@@ -468,8 +468,15 @@ public class TaskManagerScreen extends Screen {
 			t.threadName(), t.threadId(), nid, stateText(t.state()),
 			t.daemon() ? "守护" : "非守护", tr("taskmanager.priority"), t.priority(),
 			cpuText2(t), alloc), 20, panelTop + 8, text());
-		if (t.topFrame() != null) {
-			tmText(graphics, "栈顶: " + t.topFrame(), 20, panelTop + 24, textMuted());
+		if (t.topFrame() != null || t.blockedCount() > 0 || t.waitedCount() > 0) {
+			StringBuilder extra = new StringBuilder();
+			if (t.topFrame() != null) {
+				extra.append("栈顶: ").append(t.topFrame());
+			}
+			if (t.blockedCount() > 0 || t.waitedCount() > 0) {
+				extra.append(" | 锁竞争: 阻塞 ").append(t.blockedCount()).append(" 等待 ").append(t.waitedCount());
+			}
+			tmText(graphics, extra.toString(), 20, panelTop + 24, textMuted());
 		}
 		renderActionButton(graphics, tr("taskmanager.btn.pause"), 20, panelTop + 44);
 		renderActionButton(graphics, tr("taskmanager.btn.resume"), 78, panelTop + 44);

@@ -7,13 +7,17 @@ import java.util.Map;
 
 /**
  * 线程采样器：基于 ThreadMXBean 批量采集线程的状态、守护标记、优先级、累计分配字节、
- * 栈顶帧与 CPU 使用率（线程 CPU 时间差分）。
+ * 栈顶帧、锁竞争/等待次数与 CPU 使用率（线程 CPU 时间差分 + 指数平滑）。
  * <p>
  * CPU 使用率 = 两次采样间线程 CPU 时间差 / 墙钟时间差；首次采样无基线返回 NaN（采样中）。
+ * 单次差分噪声大，故用指数移动平均（EMA）做「少量多次采样取平均」，得到平滑数值。
+ * 采样周期由 {@link ResourceSampler} 驱动，与 UI 刷新频率一致（3 档：0.5s / 1s / 5s）。
  */
 public final class ThreadSampler {
 	/** 堆栈抓取深度：只需栈顶帧即可，降低每秒采样的开销。 */
 	private static final int MAX_STACK_DEPTH = 8;
+	/** CPU 平滑系数：越大越灵敏、越小越平滑（等价于多次采样的加权平均）。 */
+	private static final double CPU_ALPHA = 0.3;
 
 	private final ThreadMXBean threadBean = ManagementFactory.getThreadMXBean();
 	private final com.sun.management.ThreadMXBean allocBean;
@@ -24,6 +28,8 @@ public final class ThreadSampler {
 	private final Map<Long, Long> lastCpuTime = new HashMap<>();
 	/** 上次采样的墙钟时间（纳秒）。 */
 	private final Map<Long, Long> lastWallTime = new HashMap<>();
+	/** CPU 平滑值（EMA），消除单次差分噪声。 */
+	private final Map<Long, Double> smoothedCpu = new HashMap<>();
 
 	public ThreadSampler() {
 		this.cpuSupported = threadBean.isThreadCpuTimeSupported();
@@ -39,7 +45,8 @@ public final class ThreadSampler {
 
 	/** 单次采样结果。 */
 	public record Snapshot(String name, Thread.State state, boolean daemon, int priority,
-	                       long allocatedBytes, String topFrame, double cpuPercent) {
+	                       long allocatedBytes, String topFrame, double cpuPercent,
+	                       long blockedCount, long waitedCount) {
 	}
 
 	/**
@@ -64,11 +71,13 @@ public final class ThreadSampler {
 			long allocated = allocSupported ? allocBean.getThreadAllocatedBytes(id) : -1L;
 			String topFrame = topFrame(info.getStackTrace());
 			result.put(id, new Snapshot(info.getThreadName(), info.getThreadState(), info.isDaemon(),
-				info.getPriority(), allocated, topFrame, cpuPercent));
+				info.getPriority(), allocated, topFrame, cpuPercent,
+				info.getBlockedCount(), info.getWaitedCount()));
 		}
-		// 清理已消失线程的 CPU 缓存，防止内存增长
+		// 清理已消失线程的缓存，防止内存增长
 		lastCpuTime.keySet().retainAll(result.keySet());
 		lastWallTime.keySet().retainAll(result.keySet());
+		smoothedCpu.keySet().retainAll(result.keySet());
 		return result;
 	}
 
@@ -88,7 +97,12 @@ public final class ThreadSampler {
 		if (wallDelta <= 0 || cpuDelta < 0) {
 			return Double.NaN;
 		}
-		return cpuDelta * 100.0 / wallDelta;
+		double current = cpuDelta * 100.0 / wallDelta;
+		// 指数移动平均：少量多次采样取平均，消除单次差分噪声，得到平滑 CPU
+		double prev = smoothedCpu.getOrDefault(id, current);
+		double smoothed = CPU_ALPHA * current + (1.0 - CPU_ALPHA) * prev;
+		smoothedCpu.put(id, smoothed);
+		return smoothed;
 	}
 
 	private static String topFrame(StackTraceElement[] stack) {

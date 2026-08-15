@@ -19,12 +19,17 @@ public final class ThreadInfo {
 	private final int priority;
 	/** 累计分配字节数，-1 表示该 JVM 不支持线程分配监控。 */
 	private final long allocatedBytes;
+	/** 累计进入阻塞的次数（锁竞争）。 */
+	private final long blockedCount;
+	/** 累计等待的次数（wait/join 等）。 */
+	private final long waitedCount;
 	/** 当前栈顶帧（"类名.方法名"），null 表示无堆栈。 */
 	private final String topFrame;
 	private final ResourceUsage usage;
 
 	public ThreadInfo(String threadName, long threadId, long nativeId, Thread.State state, boolean daemon,
-	                  int priority, long allocatedBytes, String topFrame, ResourceUsage usage) {
+	                  int priority, long allocatedBytes, long blockedCount, long waitedCount,
+	                  String topFrame, ResourceUsage usage) {
 		this.threadName = threadName;
 		this.threadId = threadId;
 		this.nativeId = nativeId;
@@ -32,6 +37,8 @@ public final class ThreadInfo {
 		this.daemon = daemon;
 		this.priority = priority;
 		this.allocatedBytes = allocatedBytes;
+		this.blockedCount = blockedCount;
+		this.waitedCount = waitedCount;
 		this.topFrame = topFrame;
 		this.usage = usage;
 	}
@@ -64,6 +71,16 @@ public final class ThreadInfo {
 	/** 累计分配字节数，-1 表示不支持。 */
 	public long allocatedBytes() {
 		return allocatedBytes;
+	}
+
+	/** 累计进入阻塞的次数（锁竞争）。 */
+	public long blockedCount() {
+		return blockedCount;
+	}
+
+	/** 累计等待的次数。 */
+	public long waitedCount() {
+		return waitedCount;
 	}
 
 	/** 当前栈顶帧，null 表示无堆栈。 */

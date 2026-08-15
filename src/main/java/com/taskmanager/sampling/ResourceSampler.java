@@ -23,6 +23,8 @@ public final class ResourceSampler {
 	private static final long DEFAULT_INTERVAL_MS = 1000;
 	private static final long MIN_INTERVAL_MS = 500;
 	private static final long MAX_INTERVAL_MS = 5000;
+	/** 智能降级阈值：单次采样耗时超过该值（毫秒）时，自动延长采样间隔。 */
+	private static final long DEGRADE_THRESHOLD_MS = 200;
 
 	/** 线程名前缀 → 全局进程名 的归类规则。 */
 	private static final Map<String, String> THREAD_TO_PROCESS = Map.of(
@@ -97,15 +99,25 @@ public final class ResourceSampler {
 	}
 
 	private void runLoop() {
-		// 校验 worker 身份，防止 stop 超时后旧 worker 与重启的新 worker 同时采样
+		int degrade = 0;
 		while (running && Thread.currentThread() == worker) {
+			long start = System.nanoTime();
 			try {
 				sample();
 			} catch (Exception e) {
 				// 采样异常不影响下次采样
 			}
+			long costMs = (System.nanoTime() - start) / 1_000_000;
+			// 智能降级：采样耗时过高时指数延长采样间隔（上限 5s），耗时正常时逐步恢复
+			long sleepMs = intervalMs;
+			if (costMs > DEGRADE_THRESHOLD_MS) {
+				degrade = Math.min(degrade + 1, 3);
+				sleepMs = Math.min(intervalMs << degrade, MAX_INTERVAL_MS);
+			} else if (degrade > 0) {
+				degrade--;
+			}
 			try {
-				Thread.sleep(intervalMs);
+				Thread.sleep(sleepMs);
 			} catch (InterruptedException e) {
 				Thread.currentThread().interrupt();
 				return;
@@ -151,7 +163,7 @@ public final class ResourceSampler {
 				}
 				process.addThread(new ThreadInfo(s.name(), e.getKey(), nidRegistry.nidOf(e.getKey()),
 					s.state(), s.daemon(), s.priority(),
-					s.allocatedBytes(), s.topFrame(),
+					s.allocatedBytes(), s.blockedCount(), s.waitedCount(), s.topFrame(),
 					new ResourceUsage(threadCpu, -1L, -1L, Double.NaN)));
 			}
 			// 全局进程内存为整个 JVM 共享，标注到每个全局进程（近似）
