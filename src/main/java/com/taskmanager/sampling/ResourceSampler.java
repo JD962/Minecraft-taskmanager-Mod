@@ -33,6 +33,7 @@ public final class ResourceSampler {
 
 	private final CpuSampler cpuSampler = new CpuSampler();
 	private final MemorySampler memorySampler = new MemorySampler();
+	private final MethodProfiler methodProfiler = new MethodProfiler();
 	private final ProcessManager processManager = ProcessManager.getInstance();
 	private final com.sun.management.OperatingSystemMXBean osBean =
 		(com.sun.management.OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
@@ -41,9 +42,6 @@ public final class ResourceSampler {
 	private volatile long intervalMs = DEFAULT_INTERVAL_MS;
 	private volatile boolean running = false;
 	private Thread worker;
-
-	// 复用对象，避免频繁分配
-	private final List<ThreadInfo> threadBuffer = new ArrayList<>();
 
 	private ResourceSampler() {
 	}
@@ -69,6 +67,7 @@ public final class ResourceSampler {
 			return;
 		}
 		running = true;
+		methodProfiler.start(10);
 		worker = new Thread(this::runLoop, "TaskManager-Sampler");
 		worker.setDaemon(true);
 		worker.setPriority(Thread.MIN_PRIORITY);
@@ -77,6 +76,7 @@ public final class ResourceSampler {
 
 	public synchronized void stop() {
 		running = false;
+		methodProfiler.stop();
 		if (worker != null) {
 			worker.interrupt();
 			worker = null;
@@ -109,52 +109,50 @@ public final class ResourceSampler {
 		long nonHeap = memorySampler.nonHeapUsed();
 		double gpu = gpuSampler != null && gpuSampler.isAvailable() ? gpuSampler.sampleGpuUsage() : Double.NaN;
 
-		// 归类线程到全局进程
-		Map<Long, Thread> idToThread = new HashMap<>();
+		// 归类线程到全局进程（未匹配的归入「其他线程」）
+		Map<String, List<Thread>> processNameToThreads = new HashMap<>();
 		for (Thread t : allThreads) {
-			idToThread.put(t.threadId(), t);
+			processNameToThreads.computeIfAbsent(classifyThread(t.getName()), k -> new ArrayList<>()).add(t);
 		}
 
 		for (Process process : processManager.all()) {
 			if (process.category() != ProcessCategory.GLOBAL) {
 				continue;
 			}
-			threadBuffer.clear();
+			List<Thread> threads = processNameToThreads.getOrDefault(process.name(), List.of());
+			process.clearThreads();
 			double processCpu = 0;
-			for (Map.Entry<Long, Thread> entry : idToThread.entrySet()) {
-				Thread thread = entry.getValue();
-				if (!belongsTo(thread.getName(), process.name())) {
-					continue;
-				}
-				double threadCpu = cpu.getOrDefault(entry.getKey(), Double.NaN);
+			for (Thread thread : threads) {
+				double threadCpu = cpu.getOrDefault(thread.threadId(), Double.NaN);
 				if (!Double.isNaN(threadCpu)) {
 					processCpu += threadCpu;
 				}
-				threadBuffer.add(new ThreadInfo(thread.getName(), thread.threadId(), -1L,
+				process.addThread(new ThreadInfo(thread.getName(), thread.threadId(), -1L,
 					new ResourceUsage(threadCpu, -1L, -1L, Double.NaN)));
-			}
-			process.clearThreads();
-			for (ThreadInfo ti : threadBuffer) {
-				process.addThread(ti);
 			}
 			// 全局进程内存为整个 JVM 共享，标注到每个全局进程（近似）
 			process.setUsage(new ResourceUsage(processCpu, heap, nonHeap, gpu));
 		}
 	}
 
-	/** 线程是否归属某全局进程。 */
-	private static boolean belongsTo(String threadName, String processName) {
+	/** 根据线程名归类到全局进程名，未匹配的归入「其他线程」。 */
+	private static String classifyThread(String threadName) {
 		for (Map.Entry<String, String> entry : THREAD_TO_PROCESS.entrySet()) {
-			if (threadName.startsWith(entry.getKey()) && entry.getValue().equals(processName)) {
-				return true;
+			if (threadName.startsWith(entry.getKey())) {
+				return entry.getValue();
 			}
 		}
-		return false;
+		return "其他线程";
 	}
 
 	/** 进程级 CPU 负载（0~1，不可用返回 NaN）。 */
 	public double processCpuLoad() {
 		double load = osBean.getProcessCpuLoad();
 		return load < 0 ? Double.NaN : load * 100.0;
+	}
+
+	/** 方法级 CPU 快照：线程名 → 方法节点列表（按 CPU 占比降序）。 */
+	public Map<String, List<MethodProfiler.MethodNode>> methodSnapshot() {
+		return methodProfiler.getSnapshot();
 	}
 }
