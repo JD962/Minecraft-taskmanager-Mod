@@ -229,7 +229,7 @@ public final class OperationEngine {
 		return null;
 	}
 
-	/** 启动：待启动 → 运行中；已暂停 → 恢复；已终止的实体进程不能原地启动。 */
+	/** 启动：待启动 → 运行中；已暂停 → 恢复；已终止的受管任务重建线程；实体/系统线程拒绝。 */
 	public boolean start(Process process, String operator) {
 		Objects.requireNonNull(process, "process");
 		ProcessState state = process.state();
@@ -240,8 +240,20 @@ public final class OperationEngine {
 		if (state == ProcessState.PAUSED) {
 			return resume(process, operator);
 		}
-		if (state == ProcessState.TERMINATED && process.target() instanceof Entity) {
-			log(operator, "启动", process, "失败: 已销毁实体不能原地启动");
+		Object target = process.target();
+		if (state == ProcessState.TERMINATED) {
+			if (target instanceof ManagedTask task) {
+				try {
+					task.restart();
+					process.setState(ProcessState.RUNNING);
+					log(operator, "启动", process, "成功（重建线程）");
+					return true;
+				} catch (Exception e) {
+					log(operator, "启动", process, "失败: " + e.getMessage());
+					return false;
+				}
+			}
+			log(operator, "启动", process, "失败: 已终止进程不能原地启动（实体已销毁/系统线程无法重建）");
 			return false;
 		}
 		try {
