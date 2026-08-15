@@ -39,6 +39,7 @@
 	"taskmanager.settings.export_verify": "校验",
 	"taskmanager.settings.close": "关闭",
 	"taskmanager.hint": "点击进程选中，展开线程/方法级详情",
+	"taskmanager.thread.hint": "受管任务线程可真实操作；普通线程将被拒绝（无安全挂起 API）",
 	"taskmanager.priority": "优先级",
 	"item.taskmanager.task_manager_terminal": "任务管理器终端"
 }

@@ -34,6 +34,7 @@ public final class ResourceSampler {
 	private final ThreadSampler threadSampler = new ThreadSampler();
 	private final MemorySampler memorySampler = new MemorySampler();
 	private final MethodProfiler methodProfiler = MethodProfiler.getInstance();
+	private final NidRegistry nidRegistry = new NidRegistry();
 	private final ProcessManager processManager = ProcessManager.getInstance();
 	private final com.sun.management.OperatingSystemMXBean osBean =
 		(com.sun.management.OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
@@ -69,6 +70,7 @@ public final class ResourceSampler {
 			return;
 		}
 		running = true;
+		nidRegistry.start();
 		worker = new Thread(this::runLoop, "TaskManager-Sampler");
 		worker.setDaemon(true);
 		worker.setPriority(Thread.MIN_PRIORITY);
@@ -91,6 +93,7 @@ public final class ResourceSampler {
 				Thread.currentThread().interrupt();
 			}
 		}
+		nidRegistry.stop();
 	}
 
 	private void runLoop() {
@@ -146,7 +149,8 @@ public final class ResourceSampler {
 				if (!Double.isNaN(threadCpu)) {
 					processCpu += threadCpu;
 				}
-				process.addThread(new ThreadInfo(s.name(), e.getKey(), s.state(), s.daemon(), s.priority(),
+				process.addThread(new ThreadInfo(s.name(), e.getKey(), nidRegistry.nidOf(e.getKey()),
+					s.state(), s.daemon(), s.priority(),
 					s.allocatedBytes(), s.topFrame(),
 					new ResourceUsage(threadCpu, -1L, -1L, Double.NaN)));
 			}

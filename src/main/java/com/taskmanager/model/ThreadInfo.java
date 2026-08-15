@@ -1,15 +1,19 @@
 package com.taskmanager.model;
 
 /**
- * 线程信息快照：Java 线程名、线程 ID、状态、守护标记、优先级、CPU 占用、
- * 累计分配字节数与当前栈顶帧。
+ * 线程信息快照：Java 线程名、Java 线程 ID、OS 原生线程 ID（nid）、状态、守护标记、优先级、
+ * CPU 占用、累计分配字节数与当前栈顶帧。
  * <p>
  * 注意：Java 无「线程级存活内存」概念，故不提供线程内存字段；可用的是累计分配字节数
  * （{@link com.sun.management.ThreadMXBean#getThreadAllocatedBytes}）与由此计算的分配速率。
+ * nid 通过 JFR（{@code jdk.ThreadStart}/{@code jdk.ExecutionSample} 的 OSThreadId）获取，
+ * 无法获取时为 -1（展示 N/A）。
  */
 public final class ThreadInfo {
 	private final String threadName;
 	private final long threadId;
+	/** OS 原生线程 ID（nid），-1 表示未知。 */
+	private final long nativeId;
 	private final Thread.State state;
 	private final boolean daemon;
 	private final int priority;
@@ -19,10 +23,11 @@ public final class ThreadInfo {
 	private final String topFrame;
 	private final ResourceUsage usage;
 
-	public ThreadInfo(String threadName, long threadId, Thread.State state, boolean daemon,
+	public ThreadInfo(String threadName, long threadId, long nativeId, Thread.State state, boolean daemon,
 	                  int priority, long allocatedBytes, String topFrame, ResourceUsage usage) {
 		this.threadName = threadName;
 		this.threadId = threadId;
+		this.nativeId = nativeId;
 		this.state = state;
 		this.daemon = daemon;
 		this.priority = priority;
@@ -37,6 +42,11 @@ public final class ThreadInfo {
 
 	public long threadId() {
 		return threadId;
+	}
+
+	/** OS 原生线程 ID（nid），-1 表示未知。 */
+	public long nativeId() {
+		return nativeId;
 	}
 
 	public Thread.State state() {
@@ -67,7 +77,7 @@ public final class ThreadInfo {
 
 	@Override
 	public String toString() {
-		return "ThreadInfo{name=" + threadName + ", id=" + threadId + ", state=" + state
+		return "ThreadInfo{name=" + threadName + ", id=" + threadId + ", nid=" + nativeId + ", state=" + state
 			+ ", daemon=" + daemon + ", prio=" + priority + "}";
 	}
 }

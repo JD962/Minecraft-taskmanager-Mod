@@ -39,6 +39,7 @@
 	"taskmanager.settings.export_verify": "Verify",
 	"taskmanager.settings.close": "Close",
 	"taskmanager.hint": "Click a process to select, expand for thread/method details",
+	"taskmanager.thread.hint": "Managed-task threads can be operated; ordinary threads will be rejected (no safe suspend API)",
 	"taskmanager.priority": "Priority",
 	"item.taskmanager.task_manager_terminal": "Task Manager Terminal"
 }

@@ -2,6 +2,7 @@ package com.taskmanager.command;
 
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.arguments.LongArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.taskmanager.api.ProcessState;
@@ -11,6 +12,7 @@ import com.taskmanager.debug.DebugLogger;
 import com.taskmanager.debug.PrcExporter;
 import com.taskmanager.debug.TestTask;
 import com.taskmanager.model.Process;
+import com.taskmanager.model.ThreadInfo;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -65,6 +67,20 @@ public final class TaskManagerCommand {
 			.then(Commands.literal("testinfo")
 				.then(Commands.argument("pid", IntegerArgumentType.integer()).executes(TaskManagerCommand::testInfo)))
 			.then(Commands.literal("tickinfo").executes(TaskManagerCommand::tickInfo))
+			.then(Commands.literal("threads")
+				.then(Commands.argument("pid", IntegerArgumentType.integer()).executes(TaskManagerCommand::listThreads)))
+			.then(Commands.literal("tpause")
+				.then(Commands.argument("tid", LongArgumentType.longArg()).executes(TaskManagerCommand::pauseThread)))
+			.then(Commands.literal("tresume")
+				.then(Commands.argument("tid", LongArgumentType.longArg()).executes(TaskManagerCommand::resumeThread)))
+			.then(Commands.literal("tkill")
+				.then(Commands.argument("tid", LongArgumentType.longArg()).executes(TaskManagerCommand::terminateThread)))
+			.then(Commands.literal("tforcekill")
+				.then(Commands.argument("tid", LongArgumentType.longArg()).executes(TaskManagerCommand::forceTerminateThread)))
+			.then(Commands.literal("tpriority")
+				.then(Commands.argument("tid", LongArgumentType.longArg())
+					.then(Commands.argument("level", IntegerArgumentType.integer(1, 5)).executes(TaskManagerCommand::threadPriority))))
+			.then(Commands.literal("ttest").executes(TaskManagerCommand::threadOpTest))
 		);
 	}
 
@@ -227,6 +243,104 @@ public final class TaskManagerCommand {
 		TickRateManager manager = server.tickRateManager();
 		send(ctx, String.format("tick 速率 %.1f | 冻结 %s | 步进剩余 %d",
 			manager.tickrate(), manager.isFrozen() ? "是" : "否", manager.frozenTicksToRun()));
+		return 1;
+	}
+
+	/** 列出某进程下的线程（含 Java 线程 ID 与 nid），用于线程级操作定位。 */
+	private static int listThreads(CommandContext<CommandSourceStack> ctx) {
+		int pid = IntegerArgumentType.getInteger(ctx, "pid");
+		Process process = ProcessManager.getInstance().get(pid);
+		if (process == null) {
+			send(ctx, "进程不存在: PID " + pid);
+			return 0;
+		}
+		List<ThreadInfo> threads = process.threads();
+		if (threads.isEmpty()) {
+			send(ctx, "PID " + pid + " 无线程");
+			return 0;
+		}
+		for (ThreadInfo t : threads) {
+			String nid = t.nativeId() >= 0 ? "0x" + Long.toHexString(t.nativeId()) : "N/A";
+			send(ctx, String.format("线程 #%d (nid=%s) | %s | %s | 优先级 %d",
+				t.threadId(), nid, t.threadName(), t.state(), t.priority()));
+		}
+		return threads.size();
+	}
+
+	private static int pauseThread(CommandContext<CommandSourceStack> ctx) {
+		return operateThread(ctx, "暂停线程", OperationEngine.getInstance()::pauseThread);
+	}
+
+	private static int resumeThread(CommandContext<CommandSourceStack> ctx) {
+		return operateThread(ctx, "恢复线程", OperationEngine.getInstance()::resumeThread);
+	}
+
+	private static int terminateThread(CommandContext<CommandSourceStack> ctx) {
+		return operateThread(ctx, "终止线程", OperationEngine.getInstance()::terminateThread);
+	}
+
+	private static int forceTerminateThread(CommandContext<CommandSourceStack> ctx) {
+		return operateThread(ctx, "强制终止线程", OperationEngine.getInstance()::forceTerminateThread);
+	}
+
+	private static int threadPriority(CommandContext<CommandSourceStack> ctx) {
+		long tid = LongArgumentType.getLong(ctx, "tid");
+		int level = IntegerArgumentType.getInteger(ctx, "level");
+		String operator = ctx.getSource().getTextName();
+		boolean ok = OperationEngine.getInstance().setThreadPriority(tid, level, operator);
+		send(ctx, (ok ? "线程优先级已调整" : "调整失败") + ": 线程 #" + tid + " -> " + level);
+		return ok ? 1 : 0;
+	}
+
+	@FunctionalInterface
+	private interface ThreadOperation {
+		boolean apply(long threadId, String operator);
+	}
+
+	private static int operateThread(CommandContext<CommandSourceStack> ctx, String action, ThreadOperation operation) {
+		long tid = LongArgumentType.getLong(ctx, "tid");
+		String operator = ctx.getSource().getTextName();
+		boolean ok = operation.apply(tid, operator);
+		send(ctx, (ok ? action + "成功" : action + "失败（非受管任务线程，无真实副作用）") + ": 线程 #" + tid);
+		return ok ? 1 : 0;
+	}
+
+	/** 端到端验证线程级操作：内部创建测试任务并对其线程执行暂停/恢复/终止，打印真实状态变化。 */
+	private static int threadOpTest(CommandContext<CommandSourceStack> ctx) {
+		TestTask task = new TestTask("TaskManager-ThreadTest");
+		task.start();
+		long threadId = task.threadIds().stream().findFirst().orElse(-1L);
+		ProcessManager.getInstance().registerTask(task.name(), task);
+		String operator = ctx.getSource().getTextName();
+		OperationEngine engine = OperationEngine.getInstance();
+		try {
+			Thread.sleep(250L);
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+		}
+		long c0 = task.counter();
+		boolean paused = engine.pauseThread(threadId, operator);
+		try {
+			Thread.sleep(300L);
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+		}
+		long c1 = task.counter();
+		boolean resumed = engine.resumeThread(threadId, operator);
+		try {
+			Thread.sleep(200L);
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+		}
+		long c2 = task.counter();
+		boolean killed = engine.terminateThread(threadId, operator);
+		try {
+			Thread.sleep(300L);
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+		}
+		send(ctx, String.format("线程 #%d | 暂停 %s(计数 %d→%d) | 恢复 %s(→%d) | 终止 %s(状态 %s)",
+			threadId, paused, c0, c1, resumed, c2, killed, task.threadState()));
 		return 1;
 	}
 

@@ -31,4 +31,9 @@ public interface ManagedTask {
 	default boolean isRunning() {
 		return true;
 	}
+
+	/** 该任务拥有的线程 ID 集合（Java 线程 ID），用于线程级操作反向定位任务；无专属线程返回空集。 */
+	default java.util.Set<Long> threadIds() {
+		return java.util.Set.of();
+	}
 }

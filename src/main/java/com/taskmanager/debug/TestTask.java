@@ -92,6 +92,17 @@ public final class TestTask implements ManagedTask {
 		return t != null && t.isAlive();
 	}
 
+	@Override
+	public java.util.Set<Long> threadIds() {
+		Thread t = worker;
+		return t == null ? java.util.Set.of() : java.util.Set.of(t.threadId());
+	}
+
+	/** 任务名称。 */
+	public String name() {
+		return name;
+	}
+
 	/** 执行计数（用于验证暂停/恢复是否真实生效）。 */
 	public long counter() {
 		return counter.get();

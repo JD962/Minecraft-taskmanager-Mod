@@ -463,16 +463,20 @@ public class TaskManagerScreen extends Screen {
 
 	private void renderThreadDetail(GuiGraphicsExtractor graphics, ThreadInfo t, int panelTop) {
 		String alloc = t.allocatedBytes() >= 0 ? " | 分配 " + allocText(t.allocatedBytes()) : "";
-		tmText(graphics, String.format("线程 %s (#%d) | %s | %s | %s %d | CPU %s%s",
-			t.threadName(), t.threadId(), stateText(t.state()),
+		String nid = t.nativeId() >= 0 ? "0x" + Long.toHexString(t.nativeId()) : "N/A";
+		tmText(graphics, String.format("线程 %s (#%d nid=%s) | %s | %s | %s %d | CPU %s%s",
+			t.threadName(), t.threadId(), nid, stateText(t.state()),
 			t.daemon() ? "守护" : "非守护", tr("taskmanager.priority"), t.priority(),
 			cpuText2(t), alloc), 20, panelTop + 8, text());
 		if (t.topFrame() != null) {
 			tmText(graphics, "栈顶: " + t.topFrame(), 20, panelTop + 24, textMuted());
 		}
-		renderActionButton(graphics, tr("taskmanager.btn.priority_down"), 20, panelTop + 44);
-		renderActionButton(graphics, tr("taskmanager.btn.priority_up"), 88, panelTop + 44);
-		tmText(graphics, "线程暂停/终止不可用（JVM 无安全挂起 API）", 156, panelTop + 48, textMuted());
+		renderActionButton(graphics, tr("taskmanager.btn.pause"), 20, panelTop + 44);
+		renderActionButton(graphics, tr("taskmanager.btn.resume"), 78, panelTop + 44);
+		renderActionButton(graphics, tr("taskmanager.btn.terminate"), 136, panelTop + 44);
+		renderActionButton(graphics, tr("taskmanager.btn.priority_down"), 194, panelTop + 44);
+		renderActionButton(graphics, tr("taskmanager.btn.priority_up"), 262, panelTop + 44);
+		tmText(graphics, tr("taskmanager.thread.hint"), 20, panelTop + 66, textMuted());
 		renderActionButton(graphics, tr("taskmanager.btn.logs"), 20, panelTop + 74);
 		renderActionButton(graphics, tr("taskmanager.btn.settings"), 78, panelTop + 74);
 	}
@@ -762,14 +766,26 @@ public class TaskManagerScreen extends Screen {
 				return true;
 			}
 		}
-		// 线程操作按钮（选中线程时，优先级调整可用）
+		// 线程操作按钮（选中线程时：暂停/恢复/终止 + 优先级）
 		if (selectedThreadId >= 0) {
 			int panelTop = panelTop();
 			if (hit(mx, my, 20, panelTop + 44)) {
+				OperationEngine.getInstance().pauseThread(selectedThreadId, "本地用户");
+				return true;
+			}
+			if (hit(mx, my, 78, panelTop + 44)) {
+				OperationEngine.getInstance().resumeThread(selectedThreadId, "本地用户");
+				return true;
+			}
+			if (hit(mx, my, 136, panelTop + 44)) {
+				OperationEngine.getInstance().terminateThread(selectedThreadId, "本地用户");
+				return true;
+			}
+			if (hit(mx, my, 194, panelTop + 44)) {
 				adjustThreadPriority(selectedThreadId, -1);
 				return true;
 			}
-			if (hit(mx, my, 88, panelTop + 44)) {
+			if (hit(mx, my, 262, panelTop + 44)) {
 				adjustThreadPriority(selectedThreadId, 1);
 				return true;
 			}

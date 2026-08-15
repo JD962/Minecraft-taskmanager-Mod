@@ -409,6 +409,7 @@ public final class PrcExporter {
 				for (ThreadInfo t : threads) {
 					writeString(out, t.threadName());
 					out.writeLong(t.threadId());
+					out.writeLong(t.nativeId());
 					writeString(out, t.state().name());
 					out.writeBoolean(t.daemon());
 					out.writeInt(t.priority());

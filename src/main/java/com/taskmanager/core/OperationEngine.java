@@ -313,6 +313,81 @@ public final class OperationEngine {
 		}
 	}
 
+	// ==================== 线程级操作 ====================
+
+	/** 按 Java 线程 ID 反向定位所属进程：先查受管任务线程，再查全局进程的线程列表。 */
+	public Process findProcessByThread(long threadId) {
+		ProcessManager pm = ProcessManager.getInstance();
+		for (Process p : pm.all()) {
+			Object target = p.target();
+			if (target instanceof ManagedTask task && task.threadIds().contains(threadId)) {
+				return p;
+			}
+		}
+		for (Process p : pm.all()) {
+			for (ThreadInfo t : p.threads()) {
+				if (t.threadId() == threadId) {
+					return p;
+				}
+			}
+		}
+		return null;
+	}
+
+	/** 暂停线程：定位到所属进程后复用进程级暂停（受管任务真实/可冻结目标真实/普通线程诚实拒绝）。 */
+	public boolean pauseThread(long threadId, String operator) {
+		Process p = findProcessByThread(threadId);
+		return p != null && pause(p, operator);
+	}
+
+	/** 恢复线程。 */
+	public boolean resumeThread(long threadId, String operator) {
+		Process p = findProcessByThread(threadId);
+		return p != null && resume(p, operator);
+	}
+
+	/** 终止线程。 */
+	public boolean terminateThread(long threadId, String operator) {
+		Process p = findProcessByThread(threadId);
+		return p != null && terminate(p, operator);
+	}
+
+	/** 强制终止线程。 */
+	public boolean forceTerminateThread(long threadId, String operator) {
+		Process p = findProcessByThread(threadId);
+		return p != null && forceTerminate(p, operator);
+	}
+
+	/** 重启线程（等价重启所属进程/任务）。 */
+	public boolean restartThread(long threadId, String operator) {
+		Process p = findProcessByThread(threadId);
+		return p != null && restart(p, operator);
+	}
+
+	/** 调整线程优先级：真实映射单个线程的 Thread.setPriority（1~5 档）。 */
+	public boolean setThreadPriority(long threadId, int level, String operator) {
+		if (level < ProcessAdapter.MIN_PRIORITY || level > ProcessAdapter.MAX_PRIORITY) {
+			return false;
+		}
+		Thread thread = findThread(threadId);
+		if (thread == null) {
+			return false;
+		}
+		int mapped = switch (level) {
+			case 1 -> Thread.MIN_PRIORITY;
+			case 2 -> 3;
+			case 4 -> 7;
+			case 5 -> Thread.MAX_PRIORITY;
+			default -> Thread.NORM_PRIORITY;
+		};
+		thread.setPriority(mapped);
+		Process p = findProcessByThread(threadId);
+		if (p != null) {
+			log(operator, "调整线程优先级", p, "成功(" + level + " → " + mapped + ") 线程 #" + threadId);
+		}
+		return true;
+	}
+
 	public List<OperationLog> logs() {
 		synchronized (logLock) {
 			return List.copyOf(logs);
