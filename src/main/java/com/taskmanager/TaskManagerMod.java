@@ -2,6 +2,7 @@ package com.taskmanager;
 
 import com.taskmanager.command.TaskManagerCommand;
 import com.taskmanager.compat.SodiumAdapter;
+import com.taskmanager.control.ServerTickControl;
 import com.taskmanager.core.ModManager;
 import com.taskmanager.core.ProcessManager;
 import com.taskmanager.debug.DebugLogger;
@@ -69,7 +70,8 @@ public class TaskManagerMod implements ModInitializer {
 		ServerLifecycleEvents.SERVER_STARTING.register(server -> {
 			ProcessManager pm = ProcessManager.getInstance();
 			pm.setServer(server);
-			pm.registerGlobal("服务端主循环", ProcessSource.game(), ProcessSide.SERVER);
+			// 服务端主循环：带 Freezable 目标，暂停/恢复可真实冻结/解冻服务器 tick（等价 /tick freeze）
+			pm.registerGlobal("服务端主循环", ProcessSource.game(), ProcessSide.SERVER, ServerTickControl.getInstance());
 			pm.registerGlobal("渲染循环", ProcessSource.game(), ProcessSide.CLIENT);
 			pm.registerGlobal("网络 IO", ProcessSource.game(), ProcessSide.SERVER);
 			pm.registerGlobal("其他线程", ProcessSource.game(), ProcessSide.SERVER);

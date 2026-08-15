@@ -1,5 +1,6 @@
 package com.taskmanager.core;
 
+import com.taskmanager.api.Freezable;
 import com.taskmanager.api.ProcessAdapter;
 import com.taskmanager.api.ProcessState;
 import com.taskmanager.model.Process;
@@ -98,12 +99,17 @@ public final class ProcessManager {
 		}
 	}
 
-	/** 注册全局进程（世界 tick、渲染循环、网络 IO 等系统级任务）。 */
+	/** 注册全局进程（世界 tick、渲染循环、网络 IO 等系统级任务），target 为 null。 */
 	public Process registerGlobal(String name, ProcessSource source, ProcessSide side) {
+		return registerGlobal(name, source, side, null);
+	}
+
+	/** 注册全局进程（可携带 target，如 Freezable 冻结控制器，使操作引擎产生真实副作用）。 */
+	public Process registerGlobal(String name, ProcessSource source, ProcessSide side, Object target) {
 		Objects.requireNonNull(name, "name");
 		Objects.requireNonNull(source, "source");
 		Objects.requireNonNull(side, "side");
-		Process process = new Process(nextPid(), name, source, ProcessCategory.GLOBAL, side, null, null, -1, null);
+		Process process = new Process(nextPid(), name, source, ProcessCategory.GLOBAL, side, null, target, -1, null);
 		bindAdapter(process, source.id(), name);
 		processes.put(process.pid(), process);
 		return process;
@@ -174,13 +180,17 @@ public final class ProcessManager {
 		return processes.size();
 	}
 
-	/** 清空全部进程（服务器停止时调用），先恢复暂停实体 AI 再清表。 */
+	/** 清空全部进程（服务器停止时调用），先恢复暂停实体 AI、解冻残留冻结目标，再清表。 */
 	public void clear() {
 		synchronized (registryLock) {
 			for (Process process : processes.values()) {
 				Object target = process.target();
 				if (process.state() == ProcessState.PAUSED && target instanceof Mob mob) {
 					mob.setNoAi(false);
+				}
+				// 停机安全：若服务器 tick 被冻结，停机前解冻，避免冻结状态残留
+				if (target instanceof Freezable freezable && freezable.isFrozen()) {
+					freezable.unfreeze();
 				}
 				process.setState(ProcessState.TERMINATED);
 			}

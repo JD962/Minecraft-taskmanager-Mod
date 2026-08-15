@@ -1,5 +1,6 @@
 package com.taskmanager.core;
 
+import com.taskmanager.api.Freezable;
 import com.taskmanager.api.ManagedTask;
 import com.taskmanager.api.ProcessAdapter;
 import com.taskmanager.api.ProcessState;
@@ -36,7 +37,7 @@ public final class OperationEngine {
 		return INSTANCE;
 	}
 
-	/** 暂停：运行中 → 已暂停。仅对可真实暂停的目标生效（实体 noAI / 受管任务协作标志）。 */
+	/** 暂停：运行中 → 已暂停。Freezable 真实冻结（失败回退逻辑标记）；实体 noAI；受管任务协作标志。 */
 	public boolean pause(Process process, String operator) {
 		Objects.requireNonNull(process, "process");
 		if (process.state() != ProcessState.RUNNING) {
@@ -44,6 +45,10 @@ public final class OperationEngine {
 			return false;
 		}
 		Object target = process.target();
+		if (target instanceof Freezable freezable) {
+			// 真实冻结，失败回退到逻辑标记（兼容性与回退余量）
+			return pauseFreezable(process, operator, freezable);
+		}
 		if (!(target instanceof Mob) && !(target instanceof ManagedTask)) {
 			log(operator, "暂停", process, "失败: 系统核心线程不支持真实挂起（Thread.suspend 已废弃）");
 			return false;
@@ -63,12 +68,33 @@ public final class OperationEngine {
 		}
 	}
 
-	/** 恢复：已暂停 → 运行中。 */
+	/** 暂停可冻结目标：真实冻结成功则记录真实副作用，失败则回退逻辑标记（不崩溃、不假装真实）。 */
+	private boolean pauseFreezable(Process process, String operator, Freezable freezable) {
+		try {
+			ProcessAdapter adapter = process.adapter();
+			if (adapter != null) {
+				adapter.onPause(process);
+			}
+			boolean reallyFrozen = freezable.freeze();
+			process.setState(ProcessState.PAUSED);
+			log(operator, "暂停", process, reallyFrozen ? "成功（真实冻结服务器 tick）" : "成功（逻辑，真实冻结不可用）");
+			return true;
+		} catch (Exception e) {
+			log(operator, "暂停", process, "失败: " + e.getMessage());
+			return false;
+		}
+	}
+
+	/** 恢复：已暂停 → 运行中。Freezable 真实解冻；实体/受管任务恢复。 */
 	public boolean resume(Process process, String operator) {
 		Objects.requireNonNull(process, "process");
 		if (process.state() != ProcessState.PAUSED) {
 			log(operator, "恢复", process, "失败: 状态非已暂停");
 			return false;
+		}
+		Object target = process.target();
+		if (target instanceof Freezable freezable) {
+			return resumeFreezable(process, operator, freezable);
 		}
 		try {
 			ProcessAdapter adapter = process.adapter();
@@ -78,6 +104,23 @@ public final class OperationEngine {
 			applyEntityPause(process, false);
 			process.setState(ProcessState.RUNNING);
 			log(operator, "恢复", process, "成功");
+			return true;
+		} catch (Exception e) {
+			log(operator, "恢复", process, "失败: " + e.getMessage());
+			return false;
+		}
+	}
+
+	/** 恢复可冻结目标：真实解冻成功则记录，失败回退逻辑标记。 */
+	private boolean resumeFreezable(Process process, String operator, Freezable freezable) {
+		try {
+			ProcessAdapter adapter = process.adapter();
+			if (adapter != null) {
+				adapter.onResume(process);
+			}
+			boolean reallyUnfrozen = freezable.unfreeze();
+			process.setState(ProcessState.RUNNING);
+			log(operator, "恢复", process, reallyUnfrozen ? "成功（真实解冻服务器 tick）" : "成功（逻辑，真实解冻不可用）");
 			return true;
 		} catch (Exception e) {
 			log(operator, "恢复", process, "失败: " + e.getMessage());
@@ -168,7 +211,7 @@ public final class OperationEngine {
 			log(operator, "重启", process, "失败: 实体进程需适配器支持重启");
 			return false;
 		}
-		// target 为 null（系统核心全局进程）：终止本身被拒，重启无意义，诚实拒绝
+		// target 为 null 或 Freezable（系统核心全局进程）：无法真实终止再重建，诚实拒绝
 		log(operator, "重启", process, "失败: 系统核心线程不支持重启（无法真实终止）");
 		return false;
 	}
@@ -311,10 +354,13 @@ public final class OperationEngine {
 	}
 
 	private void log(String operator, String action, Process process, String result) {
-		// 全局进程无专属真实线程可挂起/终止，操作是逻辑标记，明确标注避免误导
-		String tag = process.category() == ProcessCategory.GLOBAL ? "（逻辑）" : "";
-		String target = process.name() + tag + " [PID " + process.pid() + "]";
-		OperationLog entry = new OperationLog(System.currentTimeMillis(), operator, action, target, result);
+		// 仅当全局进程无真实控制目标（无实体/受管任务/可冻结目标）时，操作是纯逻辑标记，明确标注避免误导
+		Object target = process.target();
+		boolean logicalOnly = process.category() == ProcessCategory.GLOBAL
+			&& !(target instanceof Mob) && !(target instanceof ManagedTask) && !(target instanceof Freezable);
+		String tag = logicalOnly ? "（逻辑）" : "";
+		String targetDesc = process.name() + tag + " [PID " + process.pid() + "]";
+		OperationLog entry = new OperationLog(System.currentTimeMillis(), operator, action, targetDesc, result);
 		synchronized (logLock) {
 			if (logs.size() == MAX_LOGS) {
 				logs.removeFirst();
@@ -322,6 +368,6 @@ public final class OperationEngine {
 			logs.addLast(entry);
 		}
 		// 调试模式：同步到调试日志（落盘）
-		DebugLogger.getInstance().recordOperation(operator, action, target, result);
+		DebugLogger.getInstance().recordOperation(operator, action, targetDesc, result);
 	}
 }

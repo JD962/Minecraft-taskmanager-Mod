@@ -18,7 +18,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.permissions.Permissions;
+import net.minecraft.world.TickRateManager;
 
 /**
  * /taskmgr 命令：与 UI 等价的进程操作接口。
@@ -62,6 +64,7 @@ public final class TaskManagerCommand {
 			.then(Commands.literal("test").executes(TaskManagerCommand::createTestTask))
 			.then(Commands.literal("testinfo")
 				.then(Commands.argument("pid", IntegerArgumentType.integer()).executes(TaskManagerCommand::testInfo)))
+			.then(Commands.literal("tickinfo").executes(TaskManagerCommand::tickInfo))
 		);
 	}
 
@@ -211,6 +214,19 @@ public final class TaskManagerCommand {
 		send(ctx, String.format("PID %d | 计数 %d | %s | 线程优先级 %d | 线程状态 %s",
 			pid, task.counter(), task.paused() ? "已暂停" : "运行中",
 			task.threadPriority(), task.threadState()));
+		return 1;
+	}
+
+	/** 查询服务器 tick 真实状态（速率/冻结），用于验证「暂停/恢复服务端主循环」是否真实生效。 */
+	private static int tickInfo(CommandContext<CommandSourceStack> ctx) {
+		MinecraftServer server = ProcessManager.getInstance().server();
+		if (server == null) {
+			send(ctx, "服务器不可用（纯客户端环境）");
+			return 0;
+		}
+		TickRateManager manager = server.tickRateManager();
+		send(ctx, String.format("tick 速率 %.1f | 冻结 %s | 步进剩余 %d",
+			manager.tickrate(), manager.isFrozen() ? "是" : "否", manager.frozenTicksToRun()));
 		return 1;
 	}
 
