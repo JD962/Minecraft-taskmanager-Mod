@@ -12,6 +12,7 @@ import java.util.List;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.permissions.Permissions;
 
 /**
  * /taskmgr 命令：与 UI 等价的进程操作接口。
@@ -22,6 +23,7 @@ public final class TaskManagerCommand {
 
 	public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
 		dispatcher.register(Commands.literal("taskmgr")
+			.requires(source -> source.permissions().hasPermission(Permissions.COMMANDS_ADMIN))
 			.then(Commands.literal("list").executes(TaskManagerCommand::list))
 			.then(Commands.literal("search")
 				.then(Commands.argument("keyword", StringArgumentType.word()).executes(TaskManagerCommand::search)))
