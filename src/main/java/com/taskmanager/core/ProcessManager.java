@@ -109,6 +109,16 @@ public final class ProcessManager {
 		return process;
 	}
 
+	/** 注册受管任务进程（target 为 ManagedTask，操作引擎可对其产生真实副作用）。 */
+	public Process registerTask(String name, Object target) {
+		Objects.requireNonNull(name, "name");
+		Objects.requireNonNull(target, "target");
+		Process process = new Process(nextPid(), name, ProcessSource.game(), ProcessCategory.GLOBAL,
+			ProcessSide.SERVER, null, target, -1, null);
+		processes.put(process.pid(), process);
+		return process;
+	}
+
 	/** 销毁指定进程节点（条件删除，避免误删复用键）。 */
 	public void destroy(int pid) {
 		synchronized (registryLock) {

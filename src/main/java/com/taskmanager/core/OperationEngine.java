@@ -1,5 +1,6 @@
 package com.taskmanager.core;
 
+import com.taskmanager.api.ManagedTask;
 import com.taskmanager.api.ProcessAdapter;
 import com.taskmanager.api.ProcessState;
 import com.taskmanager.debug.DebugLogger;
@@ -135,7 +136,19 @@ public final class OperationEngine {
 				return false;
 			}
 		}
-		if (process.target() instanceof Entity) {
+		Object target = process.target();
+		if (target instanceof ManagedTask task) {
+			try {
+				task.restart();
+				process.setState(ProcessState.RUNNING);
+				log(operator, "重启", process, "成功");
+				return true;
+			} catch (Exception e) {
+				log(operator, "重启", process, "失败: " + e.getMessage());
+				return false;
+			}
+		}
+		if (target instanceof Entity) {
 			log(operator, "重启", process, "失败: 实体进程需适配器支持重启");
 			return false;
 		}
@@ -160,6 +173,10 @@ public final class OperationEngine {
 			ProcessAdapter adapter = process.adapter();
 			if (adapter != null) {
 				adapter.onSetPriority(process, level);
+			}
+			Object target = process.target();
+			if (target instanceof ManagedTask task) {
+				task.setPriority(level);
 			}
 			process.setPriority(level);
 			log(operator, "调整优先级", process, "成功(" + level + ")");
@@ -205,19 +222,23 @@ public final class OperationEngine {
 		}
 	}
 
-	/** 实体进程暂停/恢复：Mob 通过 noAI 冻结/恢复 AI，其他实体仅做逻辑标记。 */
+	/** 实体/任务进程暂停/恢复：Mob 通过 noAI 冻结/恢复 AI；受管任务通过协作式标志位。 */
 	private void applyEntityPause(Process process, boolean paused) {
 		Object target = process.target();
 		if (target instanceof Mob mob) {
 			runOnServerThread(() -> mob.setNoAi(paused));
+		} else if (target instanceof ManagedTask task) {
+			task.setPaused(paused);
 		}
 	}
 
-	/** 终止实体进程：移除对应实体（触发实体卸载事件以清理进程）。 */
+	/** 终止实体/任务进程：移除对应实体或中断受管任务线程。 */
 	private void applyTerminate(Process process) {
 		Object target = process.target();
 		if (target instanceof Entity entity) {
 			runOnServerThread(entity::discard);
+		} else if (target instanceof ManagedTask task) {
+			task.terminate();
 		}
 	}
 

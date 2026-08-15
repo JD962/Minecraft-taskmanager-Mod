@@ -9,9 +9,12 @@ import com.taskmanager.core.OperationEngine;
 import com.taskmanager.core.ProcessManager;
 import com.taskmanager.debug.DebugLogger;
 import com.taskmanager.debug.PrcExporter;
+import com.taskmanager.debug.TestTask;
 import com.taskmanager.model.Process;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
@@ -21,6 +24,9 @@ import net.minecraft.server.permissions.Permissions;
  * /taskmgr 命令：与 UI 等价的进程操作接口。
  */
 public final class TaskManagerCommand {
+	/** 测试任务注册表（PID → 测试任务），用于运行时验证操作的真实副作用。 */
+	private static final Map<Integer, TestTask> TEST_TASKS = new ConcurrentHashMap<>();
+
 	private TaskManagerCommand() {
 	}
 
@@ -53,6 +59,9 @@ public final class TaskManagerCommand {
 			.then(Commands.literal("debug")
 				.executes(TaskManagerCommand::debugOn)
 				.then(Commands.literal("off").executes(TaskManagerCommand::debugOff)))
+			.then(Commands.literal("test").executes(TaskManagerCommand::createTestTask))
+			.then(Commands.literal("testinfo")
+				.then(Commands.argument("pid", IntegerArgumentType.integer()).executes(TaskManagerCommand::testInfo)))
 		);
 	}
 
@@ -178,6 +187,31 @@ public final class TaskManagerCommand {
 		boolean ok = DebugLogger.getInstance().disable();
 		send(ctx, ok ? "调试模式已关闭" : "调试模式未开启");
 		return ok ? 1 : 0;
+	}
+
+	/** 创建测试任务：一个真实后台线程（循环计数），注册为受管进程，用于验证操作真实性。 */
+	private static int createTestTask(CommandContext<CommandSourceStack> ctx) {
+		String name = "TaskManager-Test-" + (TEST_TASKS.size() + 1);
+		TestTask task = new TestTask(name);
+		task.start();
+		Process process = ProcessManager.getInstance().registerTask(name, task);
+		TEST_TASKS.put(process.pid(), task);
+		send(ctx, "测试任务已创建: PID " + process.pid() + " | 线程 " + name + "（用 /taskmgr pause/resume/kill/priority + testinfo 验证）");
+		return 1;
+	}
+
+	/** 查询测试任务真实状态：计数（暂停/恢复验证）、线程优先级（优先级调整验证）、线程状态（终止验证）。 */
+	private static int testInfo(CommandContext<CommandSourceStack> ctx) {
+		int pid = IntegerArgumentType.getInteger(ctx, "pid");
+		TestTask task = TEST_TASKS.get(pid);
+		if (task == null) {
+			send(ctx, "测试任务不存在: PID " + pid);
+			return 0;
+		}
+		send(ctx, String.format("PID %d | 计数 %d | %s | 线程优先级 %d | 线程状态 %s",
+			pid, task.counter(), task.paused() ? "已暂停" : "运行中",
+			task.threadPriority(), task.threadState()));
+		return 1;
 	}
 
 	@FunctionalInterface
