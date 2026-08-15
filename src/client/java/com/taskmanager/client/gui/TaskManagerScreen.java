@@ -51,6 +51,7 @@ public class TaskManagerScreen extends Screen {
 	private final Set<String> expandedSources = new HashSet<>();
 	private final Set<String> expandedCategories = new HashSet<>();
 	private final Set<String> expandedSubCategories = new HashSet<>();
+	private final Set<String> expandedRoots = new HashSet<>();
 	private boolean treeInitialized = false;
 	private int scrollOffset = 0;
 	private boolean showSettings = false;
@@ -134,11 +135,13 @@ public class TaskManagerScreen extends Screen {
 		ResourceSampler sampler = ResourceSampler.getInstance();
 		double cpu = sampler.processCpuLoad();
 		double sysCpu = sampler.systemCpuLoad();
-		long heap = sampler.heapUsed();
+		long heapUsed = sampler.heapUsed();
+		long heapCommitted = sampler.heapCommitted();
 		double gpu = sampler.gpuUsage();
 		String cpuStr = Double.isNaN(cpu) ? "N/A" : String.format("%.1f%%", cpu);
 		String sysStr = Double.isNaN(sysCpu) ? "N/A" : String.format("%.1f%%", sysCpu);
-		String memStr = formatBytes(heap);
+		// 展示「已用/已提交」：已提交对应实际物理内存 RSS，GC 不回收、数值稳定
+		String memStr = String.format("%s/%s", formatBytes(heapUsed), formatBytes(heapCommitted));
 		String gpuStr = Double.isNaN(gpu) ? "N/A" : String.format("%.1f%%", gpu);
 		tmText(graphics, String.format("进程CPU %s | 系统CPU %s | 堆 %s | GPU %s", cpuStr, sysStr, memStr, gpuStr),
 			260, 40, textMuted());
@@ -146,24 +149,27 @@ public class TaskManagerScreen extends Screen {
 
 	// ===== 进程树 =====
 	private static final int ROW_H = 14;
-	private static final int KIND_SOURCE = 0;
-	private static final int KIND_CATEGORY = 1;
-	private static final int KIND_SUBCATEGORY = 2;
-	private static final int KIND_PROCESS = 3;
-	private static final int KIND_THREAD = 4;
-	private static final int KIND_METHOD = 5;
+	private static final int KIND_ROOT = 0;        // 原版/非原版
+	private static final int KIND_SOURCE = 1;      // 来源（游戏本体/模组）
+	private static final int KIND_CATEGORY = 2;    // 类别（实体类/全局类）
+	private static final int KIND_SUBCATEGORY = 3; // 细分类（实体子类）
+	private static final int KIND_PROCESS = 4;     // 进程
+	private static final int KIND_THREAD = 5;      // 线程
+	private static final int KIND_METHOD = 6;      // 方法
 
 	/** 扁平化可视行：渲染与命中测试共用，保证点击不偏移。key 为展开键（稳定来源 ID），label 为显示文字。 */
 	private record Row(int kind, Process process, ThreadInfo thread, MethodProfiler.MethodNode method,
 	                   String key, String label, int depth, int y) {
 	}
 
-	/** 构建树形行布局：来源 → 类别 → 细分类（实体）→ 进程 → 线程 → 方法。 */
+	/** 构建树形行布局：原版/非原版 → 来源 → 类别 → 细分类（实体）→ 进程 → 线程 → 方法。 */
 	private List<Row> buildRows() {
 		List<Process> processes = filteredProcesses();
-		// 首次构建时默认展开来源与类别，让用户直接看到进程层（键用稳定来源 ID）
+		// 首次构建时默认展开 原版/非原版、来源、类别，让用户直接看到进程层（键用稳定 ID）
 		if (!treeInitialized) {
 			treeInitialized = true;
+			expandedRoots.add("vanilla");
+			expandedRoots.add("mods");
 			for (Process p : processes) {
 				String sid = p.source().id();
 				expandedSources.add(sid);
@@ -180,65 +186,93 @@ public class TaskManagerScreen extends Screen {
 		}
 		List<Row> rows = new ArrayList<>();
 		int y = 0;
-		for (Map.Entry<String, List<Process>> src : bySource.entrySet()) {
-			String sourceId = src.getKey();
-			rows.add(new Row(KIND_SOURCE, null, null, null, sourceId, sourceLabels.get(sourceId), 0, y));
+		y = addRootGroup(rows, "vanilla", "原版（游戏本体）", bySource, sourceLabels, true, y);
+		y = addRootGroup(rows, "mods", "非原版（模组）", bySource, sourceLabels, false, y);
+		return rows;
+	}
+
+	/** 添加「原版/非原版」顶级分组及其下的来源（每个来源再展开类别/进程）。 */
+	private int addRootGroup(List<Row> rows, String rootKey, String rootLabel,
+	                         Map<String, List<Process>> bySource, Map<String, String> sourceLabels,
+	                         boolean vanilla, int y) {
+		List<String> sourceIds = new ArrayList<>();
+		for (Map.Entry<String, List<Process>> e : bySource.entrySet()) {
+			if (e.getValue().get(0).source().isGame() == vanilla) {
+				sourceIds.add(e.getKey());
+			}
+		}
+		if (sourceIds.isEmpty()) {
+			return y; // 该分组无进程（如空世界无实体时非原版组仍显示 mod，原版组显示全局）
+		}
+		rows.add(new Row(KIND_ROOT, null, null, null, rootKey, rootLabel, 0, y));
+		y += ROW_H;
+		if (!expandedRoots.contains(rootKey)) {
+			return y;
+		}
+		for (String sourceId : sourceIds) {
+			rows.add(new Row(KIND_SOURCE, null, null, null, sourceId, sourceLabels.get(sourceId), 1, y));
 			y += ROW_H;
 			if (!expandedSources.contains(sourceId)) {
 				continue;
 			}
-			Map<String, List<Process>> byCategory = new LinkedHashMap<>();
-			for (Process p : src.getValue()) {
-				byCategory.computeIfAbsent(p.category() == ProcessCategory.ENTITY ? "实体类" : "全局类",
-					k -> new ArrayList<>()).add(p);
+			y = addCategoryRows(rows, sourceId, bySource.get(sourceId), y);
+		}
+		return y;
+	}
+
+	/** 添加某来源下的类别（实体类/全局类）及其进程。 */
+	private int addCategoryRows(List<Row> rows, String sourceId, List<Process> processes, int y) {
+		Map<String, List<Process>> byCategory = new LinkedHashMap<>();
+		for (Process p : processes) {
+			byCategory.computeIfAbsent(p.category() == ProcessCategory.ENTITY ? "实体类" : "全局类",
+				k -> new ArrayList<>()).add(p);
+		}
+		for (Map.Entry<String, List<Process>> cat : byCategory.entrySet()) {
+			String catKey = sourceId + "::" + cat.getKey();
+			rows.add(new Row(KIND_CATEGORY, null, null, null, catKey, cat.getKey(), 2, y));
+			y += ROW_H;
+			if (!expandedCategories.contains(catKey)) {
+				continue;
 			}
-			for (Map.Entry<String, List<Process>> cat : byCategory.entrySet()) {
-				String catKey = sourceId + "::" + cat.getKey();
-				rows.add(new Row(KIND_CATEGORY, null, null, null, catKey, cat.getKey(), 1, y));
-				y += ROW_H;
-				if (!expandedCategories.contains(catKey)) {
-					continue;
+			if ("实体类".equals(cat.getKey())) {
+				Map<String, List<Process>> bySub = new LinkedHashMap<>();
+				for (Process p : cat.getValue()) {
+					String sub = p.subCategory() == null ? "其他实体" : p.subCategory();
+					bySub.computeIfAbsent(sub, k -> new ArrayList<>()).add(p);
 				}
-				if ("实体类".equals(cat.getKey())) {
-					Map<String, List<Process>> bySub = new LinkedHashMap<>();
-					for (Process p : cat.getValue()) {
-						String sub = p.subCategory() == null ? "其他实体" : p.subCategory();
-						bySub.computeIfAbsent(sub, k -> new ArrayList<>()).add(p);
+				for (Map.Entry<String, List<Process>> sub : bySub.entrySet()) {
+					String subKey = catKey + "::" + sub.getKey();
+					rows.add(new Row(KIND_SUBCATEGORY, null, null, null, subKey, sub.getKey(), 3, y));
+					y += ROW_H;
+					if (!expandedSubCategories.contains(subKey)) {
+						continue;
 					}
-					for (Map.Entry<String, List<Process>> sub : bySub.entrySet()) {
-						String subKey = catKey + "::" + sub.getKey();
-						rows.add(new Row(KIND_SUBCATEGORY, null, null, null, subKey, sub.getKey(), 2, y));
-						y += ROW_H;
-						if (!expandedSubCategories.contains(subKey)) {
-							continue;
-						}
-						for (Process p : sub.getValue()) {
-							y = addProcessRows(rows, p, y);
-						}
-					}
-				} else {
-					for (Process p : cat.getValue()) {
+					for (Process p : sub.getValue()) {
 						y = addProcessRows(rows, p, y);
 					}
 				}
+			} else {
+				for (Process p : cat.getValue()) {
+					y = addProcessRows(rows, p, y);
+				}
 			}
 		}
-		return rows;
+		return y;
 	}
 
 	private int addProcessRows(List<Row> rows, Process p, int y) {
-		rows.add(new Row(KIND_PROCESS, p, null, null, null, null, 3, y));
+		rows.add(new Row(KIND_PROCESS, p, null, null, null, null, 4, y));
 		y += ROW_H;
 		if (expandedProcesses.contains(p.pid())) {
 			for (ThreadInfo t : p.threads()) {
-				rows.add(new Row(KIND_THREAD, p, t, null, null, null, 4, y));
+				rows.add(new Row(KIND_THREAD, p, t, null, null, null, 5, y));
 				y += ROW_H;
 				if (expandedThreads.contains(t.threadId())) {
 					List<MethodProfiler.MethodNode> methods = methodSnapshot().get(t.threadName());
 					if (methods != null) {
 						int limit = Math.min(6, methods.size());
 						for (int j = 0; j < limit; j++) {
-							rows.add(new Row(KIND_METHOD, p, t, methods.get(j), null, null, 5, y));
+							rows.add(new Row(KIND_METHOD, p, t, methods.get(j), null, null, 6, y));
 							y += ROW_H;
 						}
 					}
@@ -297,11 +331,13 @@ public class TaskManagerScreen extends Screen {
 				continue;
 			}
 			switch (row.kind()) {
-				case KIND_SOURCE -> renderGroupRow(graphics, row.label(), 0, screenY,
+				case KIND_ROOT -> renderGroupRow(graphics, row.label(), row.depth(), screenY,
+					expandedRoots.contains(row.key()), text());
+				case KIND_SOURCE -> renderGroupRow(graphics, row.label(), row.depth(), screenY,
 					expandedSources.contains(row.key()), text());
-				case KIND_CATEGORY -> renderGroupRow(graphics, row.label(), 1, screenY,
+				case KIND_CATEGORY -> renderGroupRow(graphics, row.label(), row.depth(), screenY,
 					expandedCategories.contains(row.key()), textMuted());
-				case KIND_SUBCATEGORY -> renderGroupRow(graphics, row.label(), 2, screenY,
+				case KIND_SUBCATEGORY -> renderGroupRow(graphics, row.label(), row.depth(), screenY,
 					expandedSubCategories.contains(row.key()), textMuted());
 				case KIND_PROCESS -> renderProcessRow(graphics, row.process(), row.depth(), x, screenY);
 				case KIND_THREAD -> renderThreadRow(graphics, row.thread(), row.depth(), x, screenY);
@@ -640,6 +676,14 @@ public class TaskManagerScreen extends Screen {
 				int hitBottom = Math.min(screenY + ROW_H, bottom);
 				if (my >= hitTop && my < hitBottom) {
 					switch (row.kind()) {
+						case KIND_ROOT -> {
+							if (expandedRoots.contains(row.key())) {
+								expandedRoots.remove(row.key());
+							} else {
+								expandedRoots.add(row.key());
+							}
+							return true;
+						}
 						case KIND_SOURCE -> {
 							if (expandedSources.contains(row.key())) {
 								expandedSources.remove(row.key());
@@ -675,9 +719,10 @@ public class TaskManagerScreen extends Screen {
 									expandedProcesses.add(p.pid());
 								}
 							} else {
-								// 点击行其他区域：选中进程（详情面板显示 + 操作按钮）
+								// 点击行其他区域：选中进程 + 确保展开（看到线程）
 								selectedThreadId = -1;
 								selectedPid = p.pid();
+								expandedProcesses.add(p.pid());
 							}
 							return true;
 						}

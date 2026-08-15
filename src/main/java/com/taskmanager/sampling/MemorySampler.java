@@ -18,4 +18,14 @@ public final class MemorySampler {
 	public long nonHeapUsed() {
 		return memoryBean.getNonHeapMemoryUsage().getUsed();
 	}
+
+	/** 堆内存已提交（字节）：JVM 实际向 OS 申请、对应物理内存 RSS，GC 不回收，数值稳定。 */
+	public long heapCommitted() {
+		return memoryBean.getHeapMemoryUsage().getCommitted();
+	}
+
+	/** 非堆内存已提交（字节）。 */
+	public long nonHeapCommitted() {
+		return memoryBean.getNonHeapMemoryUsage().getCommitted();
+	}
 }

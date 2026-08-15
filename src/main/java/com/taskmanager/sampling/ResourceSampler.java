@@ -187,6 +187,11 @@ public final class ResourceSampler {
 		return memorySampler.nonHeapUsed();
 	}
 
+	/** 堆内存已提交（字节）：对应物理内存 RSS，数值稳定不随 GC 波动，用于概览展示。 */
+	public long heapCommitted() {
+		return memorySampler.heapCommitted();
+	}
+
 	/** GPU 使用率（百分比 0~100，不可用返回 NaN）。 */
 	public double gpuUsage() {
 		GpuSampler gpu = gpuSampler;

@@ -34,13 +34,9 @@ public final class OperationEngine {
 		return INSTANCE;
 	}
 
-	/** 暂停：运行中 → 已暂停。受保护进程（游戏本体全局进程）拒绝。 */
+	/** 暂停：运行中 → 已暂停（逻辑暂停：标志位，真实线程不挂起）。 */
 	public boolean pause(Process process, String operator) {
 		Objects.requireNonNull(process, "process");
-		if (isProtected(process)) {
-			log(operator, "暂停", process, "失败: 系统核心进程受保护，不可操作");
-			return false;
-		}
 		if (process.state() != ProcessState.RUNNING) {
 			log(operator, "暂停", process, "失败: 状态非运行中");
 			return false;
@@ -82,13 +78,9 @@ public final class OperationEngine {
 		}
 	}
 
-	/** 终止：受保护进程（不可终止）拒绝；已终止则幂等成功。 */
+	/** 终止：已终止则幂等成功；逻辑终止（全局进程仅改状态标记）。 */
 	public boolean terminate(Process process, String operator) {
 		Objects.requireNonNull(process, "process");
-		if (isProtected(process)) {
-			log(operator, "终止", process, "失败: 系统核心进程受保护，不可终止");
-			return false;
-		}
 		if (process.state() == ProcessState.TERMINATED) {
 			log(operator, "终止", process, "忽略: 已终止");
 			return true;
@@ -109,13 +101,9 @@ public final class OperationEngine {
 		}
 	}
 
-	/** 强制终止：内置底层路径，不可被覆盖；受保护进程同样拒绝；已终止则幂等成功。 */
+	/** 强制终止：内置底层路径，不可被覆盖；已终止则幂等成功。 */
 	public boolean forceTerminate(Process process, String operator) {
 		Objects.requireNonNull(process, "process");
-		if (isProtected(process)) {
-			log(operator, "强制终止", process, "失败: 系统核心进程受保护，不可终止");
-			return false;
-		}
 		if (process.state() == ProcessState.TERMINATED) {
 			log(operator, "强制终止", process, "忽略: 已终止");
 			return true;
@@ -132,13 +120,9 @@ public final class OperationEngine {
 		}
 	}
 
-	/** 重启：有适配器走自定义流程；无适配器的实体进程不支持原地重启。受保护进程拒绝。 */
+	/** 重启：有适配器走自定义流程；无适配器的实体进程不支持原地重启。 */
 	public boolean restart(Process process, String operator) {
 		Objects.requireNonNull(process, "process");
-		if (isProtected(process)) {
-			log(operator, "重启", process, "失败: 系统核心进程受保护，不可重启");
-			return false;
-		}
 		ProcessAdapter adapter = process.adapter();
 		if (adapter != null) {
 			try {
@@ -165,13 +149,9 @@ public final class OperationEngine {
 		}
 	}
 
-	/** 调整优先级：1~5 档，3 为默认。受保护进程拒绝。 */
+	/** 调整优先级：1~5 档，3 为默认（逻辑优先级，仅对真实线程映射时生效）。 */
 	public boolean setPriority(Process process, int level, String operator) {
 		Objects.requireNonNull(process, "process");
-		if (isProtected(process)) {
-			log(operator, "调整优先级", process, "失败: 系统核心进程受保护");
-			return false;
-		}
 		if (level < ProcessAdapter.MIN_PRIORITY || level > ProcessAdapter.MAX_PRIORITY) {
 			log(operator, "调整优先级", process, "失败: 档位越界(" + level + ")");
 			return false;
@@ -190,13 +170,9 @@ public final class OperationEngine {
 		}
 	}
 
-	/** 启动：待启动 → 运行中；已暂停 → 恢复；已终止的实体进程不能原地启动。受保护进程拒绝。 */
+	/** 启动：待启动 → 运行中；已暂停 → 恢复；已终止的实体进程不能原地启动。 */
 	public boolean start(Process process, String operator) {
 		Objects.requireNonNull(process, "process");
-		if (isProtected(process)) {
-			log(operator, "启动", process, "失败: 系统核心进程受保护");
-			return false;
-		}
 		ProcessState state = process.state();
 		if (state == ProcessState.RUNNING) {
 			log(operator, "启动", process, "忽略: 已在运行");
@@ -227,11 +203,6 @@ public final class OperationEngine {
 		synchronized (logLock) {
 			return List.copyOf(logs);
 		}
-	}
-
-	/** 判断进程是否受保护：游戏本体的全局进程（服务端主循环/渲染循环/网络 IO）不可操作。 */
-	private static boolean isProtected(Process process) {
-		return process.category() == ProcessCategory.GLOBAL && process.source().isGame();
 	}
 
 	/** 实体进程暂停/恢复：Mob 通过 noAI 冻结/恢复 AI，其他实体仅做逻辑标记。 */
@@ -265,7 +236,9 @@ public final class OperationEngine {
 	}
 
 	private void log(String operator, String action, Process process, String result) {
-		String target = process.name() + " [PID " + process.pid() + "]";
+		// 全局进程无专属真实线程可挂起/终止，操作是逻辑标记，明确标注避免误导
+		String tag = process.category() == ProcessCategory.GLOBAL ? "（逻辑）" : "";
+		String target = process.name() + tag + " [PID " + process.pid() + "]";
 		OperationLog entry = new OperationLog(System.currentTimeMillis(), operator, action, target, result);
 		synchronized (logLock) {
 			if (logs.size() == MAX_LOGS) {
