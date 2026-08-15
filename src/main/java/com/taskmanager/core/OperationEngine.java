@@ -2,6 +2,7 @@ package com.taskmanager.core;
 
 import com.taskmanager.api.ProcessAdapter;
 import com.taskmanager.api.ProcessState;
+import com.taskmanager.debug.DebugLogger;
 import com.taskmanager.model.Process;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -177,5 +178,7 @@ public final class OperationEngine {
 		if (logs.size() > MAX_LOGS) {
 			logs.remove(0);
 		}
+		// 调试模式：同步到调试日志（落盘）
+		DebugLogger.getInstance().recordOperation(operator, action, target, result);
 	}
 }

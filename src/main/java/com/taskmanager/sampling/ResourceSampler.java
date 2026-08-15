@@ -1,6 +1,7 @@
 package com.taskmanager.sampling;
 
 import com.taskmanager.core.ProcessManager;
+import com.taskmanager.debug.DebugLogger;
 import com.taskmanager.model.Process;
 import com.taskmanager.model.ProcessCategory;
 import com.taskmanager.model.ResourceUsage;
@@ -103,6 +104,9 @@ public final class ResourceSampler {
 	private void sample() {
 		Set<Thread> allThreads = Thread.getAllStackTraces().keySet();
 		long[] threadIds = allThreads.stream().mapToLong(Thread::threadId).toArray();
+
+		// 调试模式：追踪线程创建/销毁
+		DebugLogger.getInstance().trackThreadDiff(allThreads);
 
 		Map<Long, Double> cpu = cpuSampler.sampleCpuUsage(threadIds);
 		long heap = memorySampler.heapUsed();

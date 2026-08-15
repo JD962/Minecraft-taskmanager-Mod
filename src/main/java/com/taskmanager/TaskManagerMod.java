@@ -3,6 +3,8 @@ package com.taskmanager;
 import com.taskmanager.command.TaskManagerCommand;
 import com.taskmanager.core.ModManager;
 import com.taskmanager.core.ProcessManager;
+import com.taskmanager.debug.DebugLogger;
+import com.taskmanager.debug.PrcExporter;
 import com.taskmanager.item.TaskManagerItem;
 import com.taskmanager.model.ProcessSide;
 import com.taskmanager.model.ProcessSource;
@@ -79,12 +81,14 @@ public class TaskManagerMod implements ModInitializer {
 			}
 		});
 
-		// 服务器停止时停止采样、释放 GPU、清空进程表、停止远程服务端
+		// 服务器停止时停止采样、释放 GPU、清空进程表、停止远程服务端、关闭调试模式与实时导出
 		ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
 			ResourceSampler.getInstance().stop();
 			gpuSampler.close();
 			ProcessManager.getInstance().clear();
 			remoteServer.stop();
+			DebugLogger.getInstance().disable();
+			PrcExporter.getInstance().stopRealtime();
 		});
 
 		// /taskmgr 命令
