@@ -12,6 +12,7 @@ import com.taskmanager.model.ProcessCategory;
 import com.taskmanager.model.ProcessSide;
 import com.taskmanager.model.ThreadInfo;
 import com.taskmanager.registry.ClassificationRegistry;
+import com.taskmanager.remote.TrafficCounter;
 import com.taskmanager.sampling.MethodProfiler;
 import com.taskmanager.sampling.ResourceSampler;
 import com.taskmanager.util.PinyinUtil;
@@ -47,6 +48,7 @@ public class TaskManagerScreen extends Screen {
 	private boolean darkMode = true;
 	private int activeTab = TAB_ALL;
 	private EditBox searchBox;
+	private EditBox runTaskNameBox;
 	private int selectedPid = -1;
 	private long selectedThreadId = -1;
 	private final Set<Integer> expandedProcesses = new HashSet<>();
@@ -79,6 +81,12 @@ public class TaskManagerScreen extends Screen {
 		this.addRenderableWidget(this.searchBox);
 		// 默认聚焦搜索框，确保中文 IME 字符事件（charTyped/preeditUpdated）能路由到它
 		this.setFocused(this.searchBox);
+		// 运行新任务二级菜单的任务名输入框（默认隐藏，打开菜单时可见）
+		this.runTaskNameBox = new EditBox(this.font, this.width / 2 - 128, this.height / 2 - 42, 200, 16, Component.literal("任务名称"));
+		this.runTaskNameBox.setMaxLength(32);
+		this.runTaskNameBox.setValue("自定义任务");
+		this.runTaskNameBox.setVisible(false);
+		this.addRenderableWidget(this.runTaskNameBox);
 		// 打开 UI 时启动方法级采样（周期跟随刷新频率），关闭 UI 时停止
 		MethodProfiler.getInstance().start(
 			MethodProfiler.periodForInterval(ResourceSampler.getInstance().intervalMs()));
@@ -167,7 +175,10 @@ public class TaskManagerScreen extends Screen {
 		// 展示「已用/已提交」：已提交对应实际物理内存 RSS，GC 不回收、数值稳定
 		String memStr = String.format("%s/%s", formatBytes(heapUsed), formatBytes(heapCommitted));
 		String gpuStr = Double.isNaN(gpu) ? "N/A" : String.format("%.1f%%", gpu);
-		tmText(graphics, String.format("JVM CPU %s | 系统 CPU %s | 堆 %s | GPU %s", cpuStr, sysStr, memStr, gpuStr),
+		long netIn = TrafficCounter.getInstance().bytesIn();
+		long netOut = TrafficCounter.getInstance().bytesOut();
+		String netStr = String.format("网络 ↑%s ↓%s", formatBytes(netOut), formatBytes(netIn));
+		tmText(graphics, String.format("JVM CPU %s | 系统 CPU %s | 堆 %s | GPU %s | %s", cpuStr, sysStr, memStr, gpuStr, netStr),
 			260, 40, textMuted());
 	}
 
@@ -420,9 +431,11 @@ public class TaskManagerScreen extends Screen {
 			graphics.fill(15, screenY - 1, x + 440, screenY + 13, accent());
 		}
 		boolean expanded = expandedProcesses.contains(p.pid());
-		tmText(graphics, hasChildren ? (expanded ? "v" : ">") : " ", x + ind, screenY, text());
-		tmText(graphics, String.valueOf(p.pid()), x + ind + 12, screenY, text());
-		renderHighlighted(graphics, p.name(), currentKeyword(), x + 50 + ind, screenY, text());
+		// PID 固定列（与表头对齐，不随树形缩进偏移）
+		tmText(graphics, String.valueOf(p.pid()), x, screenY, text());
+		// 箭头 + 名称在名称列（x+50 起）随深度缩进
+		tmText(graphics, hasChildren ? (expanded ? "v" : ">") : " ", x + 50 + ind, screenY, text());
+		renderHighlighted(graphics, p.name(), currentKeyword(), x + 62 + ind, screenY, text());
 		// 数据列（状态/CPU/内存）与表头对齐，不随缩进偏移
 		tmText(graphics, tr(stateKey(p.state())), x + colState(), screenY, stateColor(p));
 		tmText(graphics, cpuText(p), x + colCpu(), screenY, heatColor(p.usage().cpuUsage()));
@@ -435,10 +448,10 @@ public class TaskManagerScreen extends Screen {
 			graphics.fill(15, screenY - 1, x + 440, screenY + 13, accent());
 		}
 		boolean expanded = expandedThreads.contains(thread.threadId());
-		tmText(graphics, hasChildren ? (expanded ? "v" : ">") : " ", x + ind, screenY, textMuted());
+		// 线程无 PID，箭头 + 名称在名称列随深度缩进
+		tmText(graphics, hasChildren ? (expanded ? "v" : ">") : " ", x + 50 + ind, screenY, textMuted());
 		String prefix = thread.daemon() ? "*" : "-";
-		tmText(graphics, prefix + " ", x + ind + 12, screenY, textMuted());
-		renderHighlighted(graphics, thread.threadName(), currentKeyword(), x + ind + 24, screenY, textMuted());
+		renderHighlighted(graphics, prefix + " " + thread.threadName(), currentKeyword(), x + 62 + ind, screenY, textMuted());
 		// 数据列与表头对齐，不随缩进偏移
 		tmText(graphics, stateText(thread.state()), x + colState(), screenY, stateColor2(thread.state()));
 		tmText(graphics, cpuText2(thread), x + colCpu(), screenY, heatColor(thread.usage().cpuUsage()));
@@ -571,6 +584,7 @@ public class TaskManagerScreen extends Screen {
 		renderActionButton(graphics, tr("taskmanager.btn.priority_down"), 194, panelTop + 44);
 		renderActionButton(graphics, tr("taskmanager.btn.priority_up"), 262, panelTop + 44);
 		tmText(graphics, tr("taskmanager.thread.hint"), 20, panelTop + 66, textMuted());
+		renderActionButton(graphics, tr("taskmanager.btn.run_new_task"), 156, panelTop + 74, 84);
 		renderActionButton(graphics, tr("taskmanager.btn.logs"), 20, panelTop + 74);
 		renderActionButton(graphics, tr("taskmanager.btn.settings"), 78, panelTop + 74);
 	}
@@ -685,27 +699,30 @@ public class TaskManagerScreen extends Screen {
 		renderActionButton(graphics, tr("taskmanager.settings.close"), cx + 92, cy + 172);
 	}
 
-	/** 运行新任务二级菜单：展示可创建的任务类型，用户选择后创建真实受管任务。 */
+	/** 运行新任务二级菜单：展示可创建的任务类型，用户可自定义名称后创建真实受管任务。 */
 	private void renderRunMenu(GuiGraphicsExtractor graphics) {
 		int cx = this.width / 2 - 140;
 		int cy = this.height / 2 - 90;
 		graphics.fill(cx, cy, cx + 280, cy + 180, panel());
 		tmCentered(graphics, tr("taskmanager.run.title"), cx + 140, cy + 8, text());
 		tmText(graphics, tr("taskmanager.run.desc"), cx + 12, cy + 28, textMuted());
-		// 可创建的任务类型
-		renderActionButton(graphics, tr("taskmanager.run.test_task"), cx + 12, cy + 48, 120);
+		tmText(graphics, tr("taskmanager.run.name"), cx + 12, cy + 50, textMuted());
+		// 输入框为 widget（在 super.extractRenderState 中渲染），位于 cy+48
+		renderActionButton(graphics, tr("taskmanager.run.create"), cx + 12, cy + 100, 120);
 		renderActionButton(graphics, tr("taskmanager.run.close"), cx + 104, cy + 150);
 	}
 
-	/** 创建并注册一个受管测试任务（真实守护线程，可暂停/恢复/终止/调优先级）。 */
+	/** 创建并注册一个受管测试任务（真实守护线程，可暂停/恢复/终止/调优先级），名称为用户输入。 */
 	private void createRunTask() {
 		runTaskCounter++;
-		String name = "TaskManager-Run-" + runTaskCounter;
+		String input = runTaskNameBox == null ? "" : runTaskNameBox.getValue().trim();
+		String name = input.isEmpty() ? "TaskManager-Run-" + runTaskCounter : input + "-" + runTaskCounter;
 		TestTask task = new TestTask(name);
 		task.start();
 		Process process = ProcessManager.getInstance().registerTask(name, task);
 		LOGGER.info("[TM] 运行新任务创建: PID {} | 线程 {}", process.pid(), name);
 		showRunMenu = false;
+		runTaskNameBox.setVisible(false);
 	}
 
 	/** 「更多」二级窗口：展示模组/游戏注册的自定义实体分类（未平铺到主列表）。 */
@@ -743,17 +760,19 @@ public class TaskManagerScreen extends Screen {
 		if (showRunMenu) {
 			int cx = this.width / 2 - 140;
 			int cy = this.height / 2 - 90;
-			if (hit(mx, my, cx + 12, cy + 48, 120)) {
+			if (hit(mx, my, cx + 12, cy + 100, 120)) {
 				createRunTask();
 				return true;
 			}
 			if (hit(mx, my, cx + 104, cy + 150)) {
 				showRunMenu = false;
+				runTaskNameBox.setVisible(false);
 				return true;
 			}
 			// 面板外关闭并吞事件
 			if (mx < cx || mx >= cx + 280 || my < cy || my >= cy + 180) {
 				showRunMenu = false;
+				runTaskNameBox.setVisible(false);
 			}
 			return true;
 		}
@@ -937,9 +956,11 @@ public class TaskManagerScreen extends Screen {
 				showSettings = !showSettings;
 				return true;
 			}
-			// 运行新任务：打开二级菜单（创建新的受管任务，而非复活已销毁的 PID）
-			if (hit(mx, my, 156, panelTop + 50, 84)) {
+			// 运行新任务：打开二级菜单（进程详情在 panelTop+50，线程详情在 panelTop+74）
+			if (hit(mx, my, 156, panelTop + 50, 84) || hit(mx, my, 156, panelTop + 74, 84)) {
 				showRunMenu = true;
+				runTaskNameBox.setVisible(true);
+				this.setFocused(runTaskNameBox);
 				return true;
 			}
 		}

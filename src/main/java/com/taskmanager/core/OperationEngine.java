@@ -149,6 +149,10 @@ public final class OperationEngine {
 			applyTerminate(process);
 			process.setState(ProcessState.TERMINATED);
 			log(operator, "终止", process, "成功");
+			// 受管任务进程：真实终止后从进程表移除（实体进程由 ENTITY_UNLOAD 事件移除）
+			if (target instanceof ManagedTask) {
+				ProcessManager.getInstance().destroy(process.pid());
+			}
 			return true;
 		} catch (Exception e) {
 			log(operator, "终止", process, "失败: " + e.getMessage());
@@ -173,6 +177,9 @@ public final class OperationEngine {
 			process.clearThreads();
 			process.setState(ProcessState.TERMINATED);
 			log(operator, "强制终止", process, "成功");
+			if (target instanceof ManagedTask) {
+				ProcessManager.getInstance().destroy(process.pid());
+			}
 			return true;
 		} catch (Exception e) {
 			log(operator, "强制终止", process, "失败: " + e.getMessage());

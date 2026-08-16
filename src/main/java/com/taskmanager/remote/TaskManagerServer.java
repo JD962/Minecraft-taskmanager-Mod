@@ -44,6 +44,7 @@ public final class TaskManagerServer {
 	private final ProcessDataProvider provider;
 	private final Object lock = new Object();
 	private final ChannelGroup clients = new DefaultChannelGroup("tm-clients", GlobalEventExecutor.INSTANCE);
+	private final TrafficCounter traffic = TrafficCounter.getInstance();
 
 	private static final ChannelMatcher AUTHED_ONLY =
 		ch -> Boolean.TRUE.equals(ch.attr(ServerHandler.AUTHED).get()) && ch.isWritable();
@@ -65,6 +66,16 @@ public final class TaskManagerServer {
 
 	public int connectionCount() {
 		return clients.size();
+	}
+
+	/** 累计接收字节数（网络下行，扩展指标）。 */
+	public long trafficInBytes() {
+		return traffic.bytesIn();
+	}
+
+	/** 累计发送字节数（网络上行，扩展指标）。 */
+	public long trafficOutBytes() {
+		return traffic.bytesOut();
 	}
 
 	// netty 4.1.97 将 NioEventLoopGroup 标记为 deprecated（为 4.2 的 MultiThreadIoEventLoopGroup 预热），
@@ -102,6 +113,7 @@ public final class TaskManagerServer {
 							p.addLast("decoder", new StringDecoder(StandardCharsets.UTF_8));
 							p.addLast("encoder", new StringEncoder(StandardCharsets.UTF_8));
 							p.addLast("newline", NewlineAppender.INSTANCE);
+							p.addLast("traffic", traffic);
 							p.addLast("handler", new ServerHandler(config, provider, blockingPool, clients));
 						}
 					});
