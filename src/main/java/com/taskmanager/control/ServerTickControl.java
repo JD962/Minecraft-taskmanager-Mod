@@ -31,6 +31,11 @@ public final class ServerTickControl implements Freezable {
 		if (manager == null) {
 			return false;
 		}
+		// 多人专用服务端：禁止冻结世界 tick，否则影响其他玩家游玩；仅单人集成服务器可冻结
+		MinecraftServer server = ProcessManager.getInstance().server();
+		if (server != null && server.isDedicatedServer()) {
+			return false;
+		}
 		try {
 			manager.setFrozen(true);
 			// 以真实状态为准，避免 setFrozen 被静默吞掉时误报成功

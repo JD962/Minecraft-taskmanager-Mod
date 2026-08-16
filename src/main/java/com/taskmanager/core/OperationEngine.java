@@ -11,7 +11,9 @@ import com.taskmanager.model.ThreadInfo;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Objects;
+import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Mob;
 
@@ -401,6 +403,17 @@ public final class OperationEngine {
 		}
 	}
 
+	/** 记录远程操作日志：客户端对远程实例发起操作后调用，让本地日志面板也能看到远程操作记录（服务端日志存于服务端内存，不回传）。 */
+	public void recordRemote(String operator, String action, String target, String result) {
+		OperationLog entry = new OperationLog(System.currentTimeMillis(), operator, action, target, result);
+		synchronized (logLock) {
+			if (logs.size() == MAX_LOGS) {
+				logs.removeFirst();
+			}
+			logs.addLast(entry);
+		}
+	}
+
 	/** 实体/任务进程暂停/恢复：Mob 通过 noAI 冻结/恢复 AI；受管任务通过协作式标志位。 */
 	private void applyEntityPause(Process process, boolean paused) {
 		Object target = process.target();
@@ -411,10 +424,13 @@ public final class OperationEngine {
 		}
 	}
 
-	/** 终止实体/任务进程：移除对应实体或中断受管任务线程。 */
+	/** 终止实体/任务进程：玩家踢出（disconnect），其他实体移除，受管任务中断。 */
 	private void applyTerminate(Process process) {
 		Object target = process.target();
-		if (target instanceof Entity entity) {
+		if (target instanceof ServerPlayer player) {
+			// 玩家：踢出（断开连接），而非 discard（discard 单人主玩家会导致世界异常/冻结）
+			runOnServerThread(() -> player.connection.disconnect(Component.literal("已被管理员移出服务器")));
+		} else if (target instanceof Entity entity) {
 			runOnServerThread(entity::discard);
 		} else if (target instanceof ManagedTask task) {
 			task.terminate();

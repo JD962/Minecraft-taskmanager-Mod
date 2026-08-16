@@ -26,11 +26,11 @@ public final class ResourceSampler {
 	/** 智能降级阈值：单次采样耗时超过该值（毫秒）时，自动延长采样间隔。 */
 	private static final long DEGRADE_THRESHOLD_MS = 200;
 
-	/** 线程名前缀 → 全局进程名 的归类规则。 */
+	/** 线程名前缀 → 全局进程名（i18n key，与 registerGlobal 的进程名一致）的归类规则。 */
 	private static final Map<String, String> THREAD_TO_PROCESS = Map.of(
-		"Server thread", "服务端主循环",
-		"Render thread", "渲染循环",
-		"Netty", "网络 IO"
+		"Server thread", "taskmanager.proc.server_loop",
+		"Render thread", "taskmanager.proc.render_loop",
+		"Netty", "taskmanager.proc.network_io"
 	);
 
 	private final ThreadSampler threadSampler = new ThreadSampler();
@@ -174,19 +174,19 @@ public final class ResourceSampler {
 					s.allocatedBytes(), s.allocRate(), s.blockedCount(), s.waitedCount(), s.topFrame(),
 					new ResourceUsage(threadCpu, -1L, -1L, Double.NaN)));
 			}
-			// 全局进程内存为整个 JVM 共享，标注到每个全局进程（近似）
-			process.setUsage(new ResourceUsage(processCpu, heap, nonHeap, gpuUsage));
+			// 全局进程内存为整个 JVM 共享，不标注到单个进程（避免多个全局进程显示相同内存，JVM 内存由概览面板展示）
+			process.setUsage(new ResourceUsage(processCpu, -1L, -1L, gpuUsage));
 		}
 	}
 
-	/** 根据线程名归类到全局进程名，未匹配的归入「其他线程」。 */
+	/** 根据线程名归类到全局进程名（i18n key），未匹配的归入「其他线程」。 */
 	private static String classifyThread(String threadName) {
 		for (Map.Entry<String, String> entry : THREAD_TO_PROCESS.entrySet()) {
 			if (threadName.startsWith(entry.getKey())) {
 				return entry.getValue();
 			}
 		}
-		return "其他线程";
+		return "taskmanager.proc.other_threads";
 	}
 
 	/** 进程级 CPU 负载（百分比 0~100，不可用返回 NaN）。 */

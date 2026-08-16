@@ -7,7 +7,12 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+import java.util.HexFormat;
 import java.util.List;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 
 /** JSON 行协议的报文构造与读取工具，线程安全。 */
 public final class Protocol {
@@ -54,9 +59,26 @@ public final class Protocol {
 		return o;
 	}
 
-	public static JsonObject listResponse(JsonElement id, List<ProcessInfo> processes) {
+	public static JsonObject listResponse(JsonElement id, List<ProcessInfo> processes, OverviewInfo overview) {
 		JsonObject o = ok("list", id);
 		o.add("data", toJsonArray(processes));
+		if (overview != null) {
+			o.add("overview", toJson(overview));
+		}
+		return o;
+	}
+
+	public static JsonObject toJson(OverviewInfo v) {
+		JsonObject o = new JsonObject();
+		o.addProperty("processCpu", v.processCpu());
+		o.addProperty("systemCpu", v.systemCpu());
+		o.addProperty("heapUsed", v.heapUsed());
+		o.addProperty("heapCommitted", v.heapCommitted());
+		o.addProperty("gpuUsage", v.gpuUsage());
+		o.addProperty("netIn", v.netIn());
+		o.addProperty("netOut", v.netOut());
+		o.addProperty("diskReadRate", v.diskReadRate());
+		o.addProperty("diskWriteRate", v.diskWriteRate());
 		return o;
 	}
 
@@ -74,6 +96,10 @@ public final class Protocol {
 		JsonObject o = new JsonObject();
 		o.addProperty("pid", p.pid());
 		o.addProperty("name", p.name());
+		o.addProperty("source", p.source());
+		o.addProperty("category", p.category());
+		o.addProperty("subCategory", p.subCategory());
+		o.addProperty("side", p.side());
 		o.addProperty("state", p.state());
 		o.addProperty("cpu", p.cpu());
 		o.addProperty("memory", p.memory());
@@ -101,5 +127,23 @@ public final class Protocol {
 	public static JsonElement optId(JsonObject o) {
 		JsonElement e = o.get("id");
 		return (e == null || e.isJsonNull()) ? null : e;
+	}
+
+	/** 生成随机 nonce（32 字节，hex 编码），用于认证挑战。 */
+	public static String randomNonce() {
+		byte[] b = new byte[32];
+		new SecureRandom().nextBytes(b);
+		return HexFormat.of().formatHex(b);
+	}
+
+	/** HMAC-SHA256(key, message) 的 hex 结果，用于挑战-应答认证（token 不经过网络明文）。 */
+	public static String hmacSha256(String key, String message) {
+		try {
+			Mac mac = Mac.getInstance("HmacSHA256");
+			mac.init(new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+			return HexFormat.of().formatHex(mac.doFinal(message.getBytes(StandardCharsets.UTF_8)));
+		} catch (Exception e) {
+			throw new IllegalStateException("HMAC-SHA256 unavailable", e);
+		}
 	}
 }

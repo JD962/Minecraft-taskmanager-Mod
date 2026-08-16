@@ -70,7 +70,10 @@ public final class ProcessManager {
 			if (existing != null) {
 				return existing;
 			}
-			String name = entity.getName().getString();
+			// 玩家用玩家名（getName），有自定义名的生物用自定义名，否则用类型描述 ID（entity.xxx 翻译 key）
+			String name = (entity instanceof Player || entity.hasCustomName())
+				? entity.getName().getString()
+				: entity.getType().getDescriptionId();
 			Process process = new Process(nextPid(), name, ProcessSource.game(), ProcessCategory.ENTITY,
 				ProcessSide.SERVER, classifyEntity(entity), entity, entity.getId(), uuid);
 			bindAdapter(process, ProcessSource.GAME_ID, name);
@@ -181,18 +184,25 @@ public final class ProcessManager {
 		return processes.size();
 	}
 
-	/** 清空全部进程（服务器停止时调用），解冻残留冻结目标后清表。不在停止阶段恢复实体 AI，避免触发实体区块写加剧锁冲突。 */
+	/** 清空服务端进程（服务器停止时调用），解冻残留冻结目标后清表；<b>保留客户端侧进程</b>（如渲染循环，它不随服务器生命周期销毁）。
+	 * 不在停止阶段恢复实体 AI，避免触发实体区块写加剧锁冲突。 */
 	public void clear() {
 		synchronized (registryLock) {
-			for (Process process : processes.values()) {
+			processes.entrySet().removeIf(entry -> {
+				Process process = entry.getValue();
+				// 客户端进程（渲染循环）跨服务器实例存在，不随服务器停止销毁
+				if (process.side() == ProcessSide.CLIENT) {
+					return false;
+				}
 				Object target = process.target();
 				// 停机安全：若服务器 tick 被冻结，停机前解冻，避免冻结状态残留
 				if (target instanceof Freezable freezable && freezable.isFrozen()) {
 					freezable.unfreeze();
 				}
 				process.setState(ProcessState.TERMINATED);
-			}
-			processes.clear();
+				return true;
+			});
+			// 实体进程均为 SERVER 侧，随服务器停止全部清空
 			entityProcesses.clear();
 		}
 	}

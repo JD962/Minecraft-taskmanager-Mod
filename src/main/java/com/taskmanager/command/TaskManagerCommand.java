@@ -5,6 +5,7 @@ import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.LongArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
+import com.taskmanager.TaskManagerMod;
 import com.taskmanager.api.ProcessState;
 import com.taskmanager.core.OperationEngine;
 import com.taskmanager.core.ProcessManager;
@@ -13,6 +14,7 @@ import com.taskmanager.debug.PrcExporter;
 import com.taskmanager.debug.TestTask;
 import com.taskmanager.model.Process;
 import com.taskmanager.model.ThreadInfo;
+import com.taskmanager.remote.RemoteConfig;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -67,6 +69,11 @@ public final class TaskManagerCommand {
 			.then(Commands.literal("testinfo")
 				.then(Commands.argument("pid", IntegerArgumentType.integer()).executes(TaskManagerCommand::testInfo)))
 			.then(Commands.literal("tickinfo").executes(TaskManagerCommand::tickInfo))
+			.then(Commands.literal("token")
+				.executes(TaskManagerCommand::token)
+				.then(Commands.literal("reset")
+					.executes(TaskManagerCommand::resetToken)
+					.then(Commands.argument("newToken", StringArgumentType.greedyString()).executes(TaskManagerCommand::resetTokenCustom))))
 			.then(Commands.literal("threads")
 				.then(Commands.argument("pid", IntegerArgumentType.integer()).executes(TaskManagerCommand::listThreads)))
 			.then(Commands.literal("tpause")
@@ -94,7 +101,7 @@ public final class TaskManagerCommand {
 		}
 		for (Process p : processes) {
 			send(ctx, String.format("PID %d | %s | %s | %s",
-				p.pid(), p.name(), p.state(), p.source().displayName()));
+				p.pid(), displayName(p.name()), p.state(), p.source().displayName()));
 		}
 		return processes.size();
 	}
@@ -107,9 +114,18 @@ public final class TaskManagerCommand {
 			return 0;
 		}
 		for (Process p : hits) {
-			send(ctx, String.format("PID %d | %s | %s", p.pid(), p.name(), p.state()));
+			send(ctx, String.format("PID %d | %s | %s", p.pid(), displayName(p.name()), p.state()));
 		}
 		return hits.size();
+	}
+
+	/** 进程名映射：以 taskmanager. 或 entity. 开头的是 i18n key，用当前语言翻译；否则用原名。 */
+	private static String displayName(String name) {
+		if (name == null) {
+			return name;
+		}
+		return (name.startsWith("taskmanager.") || name.startsWith("entity."))
+			? Component.translatable(name).getString() : name;
 	}
 
 	private static int pause(CommandContext<CommandSourceStack> ctx) {
@@ -243,6 +259,27 @@ public final class TaskManagerCommand {
 		TickRateManager manager = server.tickRateManager();
 		send(ctx, String.format("tick 速率 %.1f | 冻结 %s | 步进剩余 %d",
 			manager.tickrate(), manager.isFrozen() ? "是" : "否", manager.frozenTicksToRun()));
+		return 1;
+	}
+
+	/** 查看远程管理 token（用于客户端连接远程服务端）。 */
+	private static int token(CommandContext<CommandSourceStack> ctx) {
+		send(ctx, "远程管理 token: " + TaskManagerMod.remoteToken());
+		return 1;
+	}
+
+	/** 重置远程管理 token 为新的随机值（永久有效，持久化到配置文件）。 */
+	private static int resetToken(CommandContext<CommandSourceStack> ctx) {
+		String newToken = RemoteConfig.resetToken(null);
+		send(ctx, "远程管理 token 已重置为: " + newToken);
+		return 1;
+	}
+
+	/** 重置远程管理 token 为指定值。 */
+	private static int resetTokenCustom(CommandContext<CommandSourceStack> ctx) {
+		String newToken = StringArgumentType.getString(ctx, "newToken");
+		String result = RemoteConfig.resetToken(newToken);
+		send(ctx, "远程管理 token 已重置为: " + result);
 		return 1;
 	}
 

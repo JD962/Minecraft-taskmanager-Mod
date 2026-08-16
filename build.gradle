@@ -28,12 +28,23 @@ loom {
 			sourceSet sourceSets.client
 		}
 	}
+
+	// 固定开发客户端账号名，使离线模式 OP 授权稳定（否则每次 runClient 随机 PlayerXXX）
+	runConfigs {
+		client {
+			programArg "--username=Dev"
+		}
+	}
 }
 
 fabricApi {
 	configureDataGeneration {
 		client = true
 	}
+}
+
+configurations {
+	embed
 }
 
 dependencies {
@@ -49,9 +60,9 @@ dependencies {
 	compileOnly "maven.modrinth:iris:oaD6KQls"          // Iris 1.11.2+26.2-fabric
 	compileOnly "maven.modrinth:sodium:a9YZH3ip"        // Sodium mc26.2-0.9.2-alpha.4-fabric
 
-	// 拼音搜索（BSD 许可，宽松，可闭源）；include 内嵌进最终 jar（jar-in-jar）
+	// 拼音搜索（BSD 许可，宽松，可闭源）；embed 配置用于解包进所有 jar（纯 Java 库，无需 remap）
 	implementation "com.belerweb:pinyin4j:2.5.1"
-	include "com.belerweb:pinyin4j:2.5.1"
+	embed "com.belerweb:pinyin4j:2.5.1"
 
 	// 磁盘 I/O 监控：JNA 调 Windows GetProcessIoCounters（LWJGL 传递依赖已提供运行时 JNA，编译期仅需签名）
 	compileOnly "net.java.dev.jna:jna:5.17.0"
@@ -62,7 +73,8 @@ processResources {
 	def version = project.version
 	inputs.property "version", version
 
-	filesMatching("fabric.mod.json") {
+	// 处理三个 fabric.mod.json（无拆分版 + 服务端版 + 客户端版）的 version 占位符
+	filesMatching("fabric*.mod.json") {
 		expand "version": version
 	}
 }
@@ -82,6 +94,11 @@ java {
 	targetCompatibility = JavaVersion.VERSION_25
 }
 
+// 解包 pinyin4j 到 jar（纯 Java 库，无需 remap；BSD 许可允许，排除清单避免冲突）
+def pinyinTrees = {
+	project.configurations.embed.collect { it.isDirectory() ? it : zipTree(it) }
+}
+
 jar {
 	def projectName = project.name
 	inputs.property "projectName", projectName
@@ -89,6 +106,42 @@ jar {
 	from("LICENSE") {
 		rename { "${it}_$projectName"}
 	}
+	// 无拆分版本（environment=*）：排除服务端/客户端专用的 fabric.mod.json
+	exclude("fabric.server.mod.json")
+	exclude("fabric.client.mod.json")
+	from pinyinTrees() {
+		exclude("META-INF/MANIFEST.MF")
+	}
+}
+
+// 服务端专用 jar（environment=server，id=taskmanager）
+tasks.register("serverJar", Jar) {
+	archiveClassifier = "server"
+	from sourceSets.main.output
+	exclude("fabric.mod.json")
+	exclude("fabric.client.mod.json")
+	rename("fabric.server.mod.json", "fabric.mod.json")
+	from pinyinTrees() {
+		exclude("META-INF/MANIFEST.MF")
+	}
+}
+
+// 客户端专用 jar（environment=client，id=taskmanager-client）
+tasks.register("clientJar", Jar) {
+	archiveClassifier = "client"
+	from sourceSets.main.output
+	from sourceSets.client.output
+	exclude("fabric.mod.json")
+	exclude("fabric.server.mod.json")
+	rename("fabric.client.mod.json", "fabric.mod.json")
+	from pinyinTrees() {
+		exclude("META-INF/MANIFEST.MF")
+	}
+}
+
+// 让 build 任务一并产出拆分版两个 jar
+tasks.named("build") {
+	dependsOn tasks.named("serverJar"), tasks.named("clientJar")
 }
 
 // configure the maven publication

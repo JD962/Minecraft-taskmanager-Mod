@@ -1,0 +1,28 @@
+{
+	"schemaVersion": 1,
+	"id": "taskmanager",
+	"version": "${version}",
+	"name": "任务管理器（服务端）",
+	"description": "游戏内任务管理器服务端核心：进程管理、远程管理服务端（TCP+token）、命令。",
+	"authors": [
+		"WorkBuddy"
+	],
+	"contact": {},
+	"license": "CC0-1.0",
+	"icon": "assets/taskmanager/icon.png",
+	"environment": "server",
+	"entrypoints": {
+		"main": [
+			"com.taskmanager.TaskManagerMod"
+		]
+	},
+	"mixins": [
+		"taskmanager.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~26.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

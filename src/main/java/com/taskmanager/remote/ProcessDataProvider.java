@@ -10,4 +10,7 @@ public interface ProcessDataProvider {
 	List<ProcessInfo> listProcesses() throws Exception;
 
 	OperationResult operate(ProcessAction action, long pid, String operator) throws Exception;
+
+	/** 系统资源概览（随 list 响应下发，供远程视图展示）。 */
+	OverviewInfo overview() throws Exception;
 }

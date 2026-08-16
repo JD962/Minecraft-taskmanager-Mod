@@ -1,6 +1,8 @@
 package com.taskmanager.client.gui;
 
 import com.taskmanager.api.ProcessState;
+import com.taskmanager.client.remote.RemoteInstance;
+import com.taskmanager.client.remote.RemoteInstances;
 import com.taskmanager.core.OperationEngine;
 import com.taskmanager.core.OperationLog;
 import com.taskmanager.core.ProcessManager;
@@ -10,8 +12,13 @@ import com.taskmanager.debug.RunnableTask;
 import com.taskmanager.model.Process;
 import com.taskmanager.model.ProcessCategory;
 import com.taskmanager.model.ProcessSide;
+import com.taskmanager.model.ProcessSource;
+import com.taskmanager.model.ResourceUsage;
 import com.taskmanager.model.ThreadInfo;
 import com.taskmanager.registry.ClassificationRegistry;
+import com.taskmanager.remote.OverviewInfo;
+import com.taskmanager.remote.ProcessAction;
+import com.taskmanager.remote.ProcessInfo;
 import com.taskmanager.remote.TrafficCounter;
 import com.taskmanager.sampling.MethodProfiler;
 import com.taskmanager.sampling.ResourceSampler;
@@ -67,6 +74,13 @@ public class TaskManagerScreen extends Screen {
 	private boolean showSettings = false;
 	private boolean showRunMenu = false;
 	private boolean showCategories = false;
+	/** 实例管理器浮层开关。 */
+	private boolean showInstances = false;
+	/** 实例管理器内「添加远程」表单开关。 */
+	private boolean showAddRemote = false;
+	/** 远程实例添加表单输入框（地址 host:port / token）。 */
+	private EditBox remoteAddrBox;
+	private EditBox remoteTokenBox;
 	/** 运行新任务二级菜单用：已创建任务计数器（用于命名）。 */
 	private int runTaskCounter = 0;
 	/** 方法级采样快照缓存（1s 刷新一次，避免渲染循环每帧重建大 Map 导致堆压力）。 */
@@ -92,6 +106,17 @@ public class TaskManagerScreen extends Screen {
 		this.runTaskNameBox.setValue("自定义任务");
 		this.runTaskNameBox.setVisible(false);
 		this.addRenderableWidget(this.runTaskNameBox);
+		// 实例管理器「添加远程」表单输入框（默认隐藏）
+		this.remoteAddrBox = new EditBox(this.font, this.width / 2 - 100, this.height / 2 + 50, 190, 16, Component.literal("host:port"));
+		this.remoteAddrBox.setMaxLength(64);
+		this.remoteAddrBox.setValue("127.0.0.1:25566");
+		this.remoteAddrBox.setVisible(false);
+		this.addRenderableWidget(this.remoteAddrBox);
+		this.remoteTokenBox = new EditBox(this.font, this.width / 2 - 100, this.height / 2 + 72, 190, 16, Component.literal("token"));
+		this.remoteTokenBox.setMaxLength(128);
+		this.remoteTokenBox.setValue("");
+		this.remoteTokenBox.setVisible(false);
+		this.addRenderableWidget(this.remoteTokenBox);
 		// 打开 UI 时启动方法级采样（周期跟随刷新频率），关闭 UI 时停止
 		MethodProfiler.getInstance().start(
 			MethodProfiler.periodForInterval(ResourceSampler.getInstance().intervalMs()));
@@ -106,6 +131,8 @@ public class TaskManagerScreen extends Screen {
 
 	@Override
 	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
+		// 远程实例：每帧尝试刷新选中实例快照（内部按 1s 节流 + 异步）
+		RemoteInstances.getInstance().refreshSelected();
 		graphics.fill(0, 0, this.width, this.height, bg());
 		graphics.fill(0, 0, this.width, 26, panel());
 		tmCentered(graphics, tr("taskmanager.title"), this.width / 2, 8, text());
@@ -113,6 +140,7 @@ public class TaskManagerScreen extends Screen {
 		renderCloseButton(graphics);
 		renderTabs(graphics);
 		renderCategoryButton(graphics);
+		renderInstanceButton(graphics);
 		renderOverview(graphics);
 		renderProcessList(graphics);
 		renderDetailPanel(graphics);
@@ -125,6 +153,9 @@ public class TaskManagerScreen extends Screen {
 		}
 		if (showCategories) {
 			renderCategories(graphics);
+		}
+		if (showInstances) {
+			renderInstances(graphics);
 		}
 		// 渲染 widget（EditBox 搜索框等），置于最上层
 		super.extractRenderState(graphics, mouseX, mouseY, partialTick);
@@ -167,8 +198,74 @@ public class TaskManagerScreen extends Screen {
 		tmCentered(graphics, tr("taskmanager.cat.more"), x + 22, y + 4, text());
 	}
 
+	/** 实例入口按钮：显示当前实例（本地集成/远程），点击打开实例管理器浮层。 */
+	private void renderInstanceButton(GuiGraphicsExtractor graphics) {
+		int x = 320;
+		int y = 58;
+		int w = 110;
+		RemoteInstances ri = RemoteInstances.getInstance();
+		RemoteInstance sel = ri.selected();
+		String name = sel != null ? sel.name() : "本地集成";
+		graphics.fill(x, y, x + w, y + 16, button());
+		tmCentered(graphics, fitName("实例:" + name, w - 8), x + w / 2, y + 4, text());
+	}
+
+	/** 实例管理器浮层：本地集成 + 远程实例列表 + 添加远程表单。 */
+	private void renderInstances(GuiGraphicsExtractor graphics) {
+		int cx = this.width / 2 - 160;
+		int cy = this.height / 2 - 120;
+		int w = 320;
+		int h = 240;
+		graphics.fill(cx, cy, cx + w, cy + h, panel());
+		tmCentered(graphics, tr("taskmanager.instances.title"), cx + w / 2, cy + 8, text());
+
+		RemoteInstances ri = RemoteInstances.getInstance();
+		int y = cy + 30;
+
+		// 本地集成
+		boolean local = ri.isLocal();
+		graphics.fill(cx + 12, y, cx + w - 12, y + 18, local ? accent() : button());
+		tmText(graphics, tr("taskmanager.instances.local"), cx + 18, y + 5, local ? 0xFFFFFFFF : text());
+		y += 24;
+
+		// 远程实例列表（含删除）
+		java.util.List<RemoteInstance> all = ri.all();
+		for (int i = 0; i < all.size(); i++) {
+			if (y > cy + h - 90) {
+				break;
+			}
+			RemoteInstance inst = all.get(i);
+			boolean sel = ri.selectedIndex() == i;
+			graphics.fill(cx + 12, y, cx + w - 42, y + 18, sel ? accent() : button());
+			String label = fitName(inst.name() + " · " + inst.status(), w - 70);
+			tmText(graphics, label, cx + 18, y + 5, sel ? 0xFFFFFFFF : text());
+			renderActionButton(graphics, "×", cx + w - 40, y, 28);
+			y += 24;
+		}
+
+		// 添加远程（切换表单）
+		renderActionButton(graphics, showAddRemote ? tr("taskmanager.instances.cancel_add") : tr("taskmanager.instances.add"), cx + 12, y, 110);
+		y += 24;
+
+		// 添加表单（输入框为 widget，坐标在 init 对齐）
+		if (showAddRemote) {
+			tmText(graphics, tr("taskmanager.instances.addr"), cx + 14, cy + 172, textMuted());
+			tmText(graphics, tr("taskmanager.instances.token"), cx + 14, cy + 194, textMuted());
+			renderActionButton(graphics, tr("taskmanager.instances.connect"), cx + 250, cy + 170, 60);
+		}
+
+		// 关闭
+		renderActionButton(graphics, tr("taskmanager.instances.close"), cx + w / 2 - 28, cy + h - 28, 56);
+	}
+
 	// ===== 系统资源概览 =====
 	private void renderOverview(GuiGraphicsExtractor graphics) {
+		String line = RemoteInstances.getInstance().isLocal() ? localOverview() : remoteOverview();
+		tmText(graphics, line, 260, 40, textMuted());
+	}
+
+	/** 本地概览指标（客户端自身资源）。 */
+	private String localOverview() {
 		ResourceSampler sampler = ResourceSampler.getInstance();
 		double cpu = sampler.processCpuLoad();
 		double sysCpu = sampler.systemCpuLoad();
@@ -177,13 +274,11 @@ public class TaskManagerScreen extends Screen {
 		double gpu = sampler.gpuUsage();
 		String cpuStr = Double.isNaN(cpu) ? "N/A" : String.format("%.1f%%", cpu);
 		String sysStr = Double.isNaN(sysCpu) ? "N/A" : String.format("%.1f%%", sysCpu);
-		// 展示「已用/已提交」：已提交对应实际物理内存 RSS，GC 不回收、数值稳定
 		String memStr = String.format("%s/%s", formatBytes(heapUsed), formatBytes(heapCommitted));
 		String gpuStr = Double.isNaN(gpu) ? "N/A" : String.format("%.1f%%", gpu);
 		long netIn = TrafficCounter.getInstance().bytesIn();
 		long netOut = TrafficCounter.getInstance().bytesOut();
 		String netStr = String.format("网络 ↑%s ↓%s", formatBytes(netOut), formatBytes(netIn));
-		// 磁盘 I/O 速率（累计值意义有限，展示速率；不可用显示「不支持」）
 		String ioStr;
 		long[] ioRate = sampler.diskIoRate();
 		if (!sampler.diskIoAvailable()) {
@@ -193,9 +288,30 @@ public class TaskManagerScreen extends Screen {
 		} else {
 			ioStr = String.format("磁盘 读%s/s 写%s/s", formatBytes(ioRate[0]), formatBytes(ioRate[1]));
 		}
-		tmText(graphics, String.format("JVM CPU %s | 系统 CPU %s | 堆 %s | GPU %s | %s | %s",
-				cpuStr, sysStr, memStr, gpuStr, netStr, ioStr),
-			260, 40, textMuted());
+		return String.format("JVM CPU %s | 系统 CPU %s | 堆 %s | GPU %s | %s | %s",
+			cpuStr, sysStr, memStr, gpuStr, netStr, ioStr);
+	}
+
+	/** 远程概览指标（远程服务端资源，随 list 响应下发）。 */
+	private String remoteOverview() {
+		RemoteInstance inst = RemoteInstances.getInstance().selected();
+		OverviewInfo v = inst == null ? null : inst.overview();
+		if (v == null || v == OverviewInfo.EMPTY) {
+			return "远程实例（等待资源数据...）";
+		}
+		String cpuStr = Double.isNaN(v.processCpu()) ? "N/A" : String.format("%.1f%%", v.processCpu());
+		String sysStr = Double.isNaN(v.systemCpu()) ? "N/A" : String.format("%.1f%%", v.systemCpu());
+		String memStr = v.heapUsed() < 0 ? "-" : String.format("%s/%s", formatBytes(v.heapUsed()), formatBytes(v.heapCommitted()));
+		String gpuStr = Double.isNaN(v.gpuUsage()) ? "N/A" : String.format("%.1f%%", v.gpuUsage());
+		String netStr = v.netIn() < 0 ? "网络 -" : String.format("网络 ↑%s ↓%s", formatBytes(v.netOut()), formatBytes(v.netIn()));
+		String ioStr;
+		if (v.diskReadRate() < 0) {
+			ioStr = "磁盘 I/O 不支持";
+		} else {
+			ioStr = String.format("磁盘 读%s/s 写%s/s", formatBytes(v.diskReadRate()), formatBytes(v.diskWriteRate()));
+		}
+		return String.format("远程 JVM CPU %s | 系统 CPU %s | 堆 %s | GPU %s | %s | %s",
+			cpuStr, sysStr, memStr, gpuStr, netStr, ioStr);
 	}
 
 	// ===== 进程树 =====
@@ -441,6 +557,19 @@ public class TaskManagerScreen extends Screen {
 		tmText(graphics, label, x + 12, screenY, color);
 	}
 
+	/** 当前进程表行数（本地/远程统一走树形行），供滚动边界计算。 */
+	private int currentRowCount() {
+		return buildRows().size();
+	}
+
+	/** 进程名映射：以 taskmanager. 或 entity. 开头的是 i18n key，用本地语言翻译；否则用原名。 */
+	private String remoteProcName(String name) {
+		if (name == null) {
+			return name;
+		}
+		return (name.startsWith("taskmanager.") || name.startsWith("entity.")) ? tr(name) : name;
+	}
+
 	private void renderProcessRow(GuiGraphicsExtractor graphics, Process p, int depth, int x, int screenY, boolean hasChildren) {
 		int ind = depth * 16;
 		if (p.pid() == selectedPid || selectedPids.contains(p.pid())) {
@@ -452,7 +581,7 @@ public class TaskManagerScreen extends Screen {
 		// 箭头 + 名称在名称列（x+50 起）随深度缩进；名称截断避免压到状态列
 		tmText(graphics, hasChildren ? (expanded ? "v" : ">") : " ", x + 50 + ind, screenY, text());
 		int nameMaxW = Math.max(20, colState() - 62 - ind - 8);
-		renderHighlighted(graphics, fitName(p.name(), nameMaxW), currentKeyword(), x + 62 + ind, screenY, text());
+		renderHighlighted(graphics, fitName(remoteProcName(p.name()), nameMaxW), currentKeyword(), x + 62 + ind, screenY, text());
 		// 数据列（状态/CPU/内存）与表头对齐，不随缩进偏移
 		tmText(graphics, tr(stateKey(p.state())), x + colState(), screenY, stateColor(p));
 		tmText(graphics, cpuText(p), x + colCpu(), screenY, heatColor(p.usage().cpuUsage()));
@@ -557,10 +686,10 @@ public class TaskManagerScreen extends Screen {
 
 	// ===== 详情面板 + 操作按钮 =====
 	private void renderDetailPanel(GuiGraphicsExtractor graphics) {
-		Process selected = selectedPid < 0 ? null : ProcessManager.getInstance().get(selectedPid);
-		ThreadInfo selectedThread = selectedThreadId < 0 ? null : findThread(selectedThreadId);
 		int panelTop = panelTop();
 		graphics.fill(0, panelTop, this.width, this.height, panel());
+		Process selected = selectedPid < 0 ? null : findProcess(selectedPid);
+		ThreadInfo selectedThread = selectedThreadId < 0 ? null : findThread(selectedThreadId);
 		if (selectedThread != null) {
 			renderThreadDetail(graphics, selectedThread, panelTop);
 			return;
@@ -632,6 +761,19 @@ public class TaskManagerScreen extends Screen {
 		return null;
 	}
 
+	/** 按 PID 查找进程（本地走 ProcessManager，远程从快照桥接）。 */
+	private Process findProcess(int pid) {
+		if (!RemoteInstances.getInstance().isLocal()) {
+			for (ProcessInfo info : RemoteInstances.getInstance().snapshot()) {
+				if (info.pid() == pid) {
+					return toProcess(info);
+				}
+			}
+			return null;
+		}
+		return ProcessManager.getInstance().get(pid);
+	}
+
 	/** Shift 区间选择：把锚点到当前行之间（含两端）的所有进程/线程加入多选集合。 */
 	private void selectRange(int rowIndex, List<Row> rows) {
 		int lo = anchorRowIndex < 0 ? rowIndex : Math.min(anchorRowIndex, rowIndex);
@@ -651,7 +793,7 @@ public class TaskManagerScreen extends Screen {
 		List<Process> result = new ArrayList<>();
 		if (!selectedPids.isEmpty()) {
 			for (int pid : selectedPids) {
-				Process p = ProcessManager.getInstance().get(pid);
+				Process p = findProcess(pid);
 				if (p != null) {
 					result.add(p);
 				}
@@ -659,7 +801,7 @@ public class TaskManagerScreen extends Screen {
 			return result;
 		}
 		if (selectedPid >= 0) {
-			Process p = ProcessManager.getInstance().get(selectedPid);
+			Process p = findProcess(selectedPid);
 			if (p != null) {
 				result.add(p);
 			}
@@ -889,6 +1031,70 @@ public class TaskManagerScreen extends Screen {
 			}
 			return true;
 		}
+		// 实例管理器浮层（严格模态）
+		if (showInstances) {
+			int cx = this.width / 2 - 160;
+			int cy = this.height / 2 - 120;
+			int w = 320;
+			int h = 240;
+			RemoteInstances ri = RemoteInstances.getInstance();
+			// 本地集成
+			if (hit(mx, my, cx + 12, cy + 30, w - 24)) {
+				ri.select(RemoteInstances.LOCAL_INDEX);
+				clearRemoteSelection();
+				scrollOffset = 0;
+				return true;
+			}
+			// 远程实例列表（与渲染同一套 y 计算）
+			int y = cy + 54;
+			java.util.List<RemoteInstance> all = ri.all();
+			for (int i = 0; i < all.size(); i++) {
+				if (y > cy + h - 90) {
+					break;
+				}
+				if (hit(mx, my, cx + w - 40, y, 28)) {
+					ri.remove(i);
+					clearRemoteSelection();
+					return true;
+				}
+				if (hit(mx, my, cx + 12, y, w - 54)) {
+					ri.select(i);
+					clearRemoteSelection();
+					scrollOffset = 0;
+					ri.refreshSelected();
+					return true;
+				}
+				y += 24;
+			}
+			// 添加远程（切换表单）
+			if (hit(mx, my, cx + 12, y, 110)) {
+				showAddRemote = !showAddRemote;
+				boolean v = showAddRemote;
+				remoteAddrBox.setVisible(v);
+				remoteTokenBox.setVisible(v);
+				if (v) {
+					this.setFocused(remoteAddrBox);
+				}
+				return true;
+			}
+			// 连接
+			if (showAddRemote && hit(mx, my, cx + 250, cy + 170, 60)) {
+				connectRemote();
+				return true;
+			}
+			// 关闭
+			if (hit(mx, my, cx + w / 2 - 28, cy + h - 28, 56)) {
+				closeInstances();
+				return true;
+			}
+			// 面板外关闭并吞事件
+			if (mx < cx || mx >= cx + w || my < cy || my >= cy + h) {
+				closeInstances();
+				return true;
+			}
+			// 面板内未命中的点击交给 widget（EditBox 等）处理，允许点击输入框切换焦点
+			return super.mouseClicked(event, doubleClick);
+		}
 		// 设置面板（严格模态，最优先）：打开时只响应面板内点击，面板外关闭并吞事件
 		if (showSettings) {
 			int cx = this.width / 2 - 120;
@@ -955,13 +1161,19 @@ public class TaskManagerScreen extends Screen {
 			showCategories = true;
 			return true;
 		}
-		// 进程/线程列表点击（选中/展开）——用与渲染一致的扁平化布局做命中测试，避免偏移
+		// 实例入口按钮（更多按钮右侧）
+		if (mx >= 320 && mx < 430 && my >= 58 && my < 74) {
+			showInstances = true;
+			return true;
+		}
+		// 进程/线程列表点击（选中/展开）——本地与远程统一走此逻辑（远程进程已桥接成本地 Process 模型）
 		List<Row> rows = buildRows();
 		clampScrollToContent(rows.size());
 		int top = listTop();
 		int bottom = listBottom();
-		// 鼠标必须在列表区域内（顶部页签以上、底部面板以下），且避开右侧滚动条区域（width-14 起），避免拖动滚动条时误触列表行
-		if (my >= top && my < bottom && mx < this.width - 14) {
+		// 鼠标必须在列表区域内（顶部页签以上、底部面板以下），且限定在进程行实际内容宽度内（x+440，与选中高亮条一致），
+		// 避免点击右侧大片空白区域误触列表行选中/展开
+		if (my >= top && my < bottom && mx >= 15 && mx < 20 + 440) {
 			for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
 				Row row = rows.get(rowIndex);
 				int screenY = top + row.y() - scrollOffset;
@@ -1075,11 +1287,18 @@ public class TaskManagerScreen extends Screen {
 							return true;
 						}
 						default -> {
-							// 方法行不可点击
+							// 方法行不可点击，消费事件避免触发下方空白取消选中
+							return true;
 						}
 					}
 				}
 			}
+			// 点击列表区域空白（无任何行命中）：取消所有选中
+			selectedPid = -1;
+			selectedPids.clear();
+			selectedThreadId = -1;
+			selectedThreadIds.clear();
+			return true;
 		}
 		// 日志/设置/运行新任务 按钮（不依赖选中进程，始终可用）
 		{
@@ -1126,41 +1345,150 @@ public class TaskManagerScreen extends Screen {
 				return true;
 			}
 		}
-		// 进程操作按钮（选中进程，支持多选批量操作）
+		// 进程操作按钮（选中进程，支持多选批量操作；本地走引擎，远程走协议）
 		List<Process> selected = selectedProcesses();
 		if (!selected.isEmpty()) {
 			int panelTop = panelTop();
-			OperationEngine engine = OperationEngine.getInstance();
 			if (hit(mx, my, 20, panelTop + 26)) {
-				for (Process p : selected) engine.pause(p, "本地用户");
+				operateProcesses(ProcessAction.PAUSE, selected);
 				return true;
 			}
 			if (hit(mx, my, 78, panelTop + 26)) {
-				for (Process p : selected) engine.resume(p, "本地用户");
+				operateProcesses(ProcessAction.RESUME, selected);
 				return true;
 			}
 			if (hit(mx, my, 136, panelTop + 26)) {
-				for (Process p : selected) engine.terminate(p, "本地用户");
+				operateProcesses(ProcessAction.TERMINATE, selected);
 				return true;
 			}
 			if (hit(mx, my, 194, panelTop + 26)) {
-				for (Process p : selected) engine.forceTerminate(p, "本地用户");
+				operateProcesses(ProcessAction.FORCE_TERMINATE, selected);
 				return true;
 			}
 			if (hit(mx, my, 274, panelTop + 26)) {
-				for (Process p : selected) engine.restart(p, "本地用户");
+				operateProcesses(ProcessAction.RESTART, selected);
 				return true;
 			}
-			if (hit(mx, my, 20, panelTop + 50)) {
-				for (Process p : selected) engine.setPriority(p, Math.max(1, p.priority() - 1), "本地用户");
-				return true;
-			}
-			if (hit(mx, my, 88, panelTop + 50)) {
-				for (Process p : selected) engine.setPriority(p, Math.min(5, p.priority() + 1), "本地用户");
-				return true;
+			// 优先级调整仅本地有效（远程协议无优先级字段）
+			if (RemoteInstances.getInstance().isLocal()) {
+				OperationEngine engine = OperationEngine.getInstance();
+				if (hit(mx, my, 20, panelTop + 50)) {
+					for (Process p : selected) engine.setPriority(p, Math.max(1, p.priority() - 1), "本地用户");
+					return true;
+				}
+				if (hit(mx, my, 88, panelTop + 50)) {
+					for (Process p : selected) engine.setPriority(p, Math.min(5, p.priority() + 1), "本地用户");
+					return true;
+				}
 			}
 		}
+		// 点击列表视图/面板区域的空白（未命中任何行/按钮，含右侧空白、列表下方空白）：取消所有选中
+		if (my >= listTop()) {
+			selectedPid = -1;
+			selectedPids.clear();
+			selectedThreadId = -1;
+			selectedThreadIds.clear();
+			return true;
+		}
 		return super.mouseClicked(event, doubleClick);
+	}
+
+	/** 统一进程操作：本地走 OperationEngine，远程走远程协议（完成后刷新快照）。 */
+	private void operateProcesses(ProcessAction action, List<Process> targets) {
+		if (targets.isEmpty()) {
+			return;
+		}
+		if (RemoteInstances.getInstance().isLocal()) {
+			OperationEngine engine = OperationEngine.getInstance();
+			for (Process p : targets) {
+				switch (action) {
+					case PAUSE -> engine.pause(p, "本地用户");
+					case RESUME -> engine.resume(p, "本地用户");
+					case TERMINATE -> engine.terminate(p, "本地用户");
+					case FORCE_TERMINATE -> engine.forceTerminate(p, "本地用户");
+					case RESTART -> engine.restart(p, "本地用户");
+					case START -> engine.start(p, "本地用户");
+				}
+			}
+			return;
+		}
+		RemoteInstance inst = RemoteInstances.getInstance().selected();
+		if (inst == null) {
+			return;
+		}
+		for (Process p : targets) {
+			long pid = p.pid();
+			inst.operate(action, pid, "远程管理员").whenComplete((result, err) -> {
+				String res = err != null ? "异常:" + err.getMessage() : (result.success() ? "成功" : result.message());
+				// 记录到本地日志面板（服务端日志存服务端内存不回传，客户端自行记录可见的操作痕迹）
+				OperationEngine.getInstance().recordRemote("远程管理员", actionLabel(action), "PID " + pid, res);
+				LOGGER.info("[TM] 远程操作 {} pid={} -> {}", action.wire(), pid, res);
+			});
+		}
+		inst.refresh();
+	}
+
+	/** 操作动作的中文标签（与本地 OperationEngine 日志文案一致）。 */
+	private static String actionLabel(ProcessAction a) {
+		return switch (a) {
+			case PAUSE -> "暂停";
+			case RESUME -> "恢复";
+			case TERMINATE -> "终止";
+			case FORCE_TERMINATE -> "强制终止";
+			case RESTART -> "重启";
+			case START -> "启动";
+		};
+	}
+
+	/** 连接远程：解析 host:port + token，创建并连接远程实例。 */
+	private void connectRemote() {
+		String addr = remoteAddrBox == null ? "" : remoteAddrBox.getValue().trim();
+		String token = remoteTokenBox == null ? "" : remoteTokenBox.getValue().trim();
+		if (addr.isEmpty() || token.isEmpty()) {
+			LOGGER.info("[TM] 添加远程失败：地址或 token 为空");
+			return;
+		}
+		String host = addr;
+		int port = 25566;
+		int colon = addr.lastIndexOf(':');
+		if (colon > 0) {
+			host = addr.substring(0, colon);
+			try {
+				port = Integer.parseInt(addr.substring(colon + 1).trim());
+			} catch (NumberFormatException e) {
+				LOGGER.info("[TM] 添加远程失败：端口非法 {}", addr);
+				return;
+			}
+		}
+		RemoteInstances ri = RemoteInstances.getInstance();
+		RemoteInstance inst = ri.add(null, host, port, token);
+		boolean ok = inst.connect();
+		if (ok) {
+			inst.refresh();
+			ri.select(ri.all().size() - 1);
+			clearRemoteSelection();
+			scrollOffset = 0;
+		}
+		LOGGER.info("[TM] 添加远程 {}:{} 连接 {}", host, port, ok ? "成功" : "失败");
+		showAddRemote = false;
+		remoteAddrBox.setVisible(false);
+		remoteTokenBox.setVisible(false);
+	}
+
+	/** 关闭实例管理器浮层。 */
+	private void closeInstances() {
+		showInstances = false;
+		showAddRemote = false;
+		remoteAddrBox.setVisible(false);
+		remoteTokenBox.setVisible(false);
+	}
+
+	/** 清空进程/线程选中（切换实例时调用）。 */
+	private void clearRemoteSelection() {
+		selectedPid = -1;
+		selectedPids.clear();
+		selectedThreadId = -1;
+		selectedThreadIds.clear();
 	}
 
 	private void exportOnce() {
@@ -1188,7 +1516,7 @@ public class TaskManagerScreen extends Screen {
 	@Override
 	public boolean mouseScrolled(double mx, double my, double scrollX, double scrollY) {
 		int viewportHeight = listBottom() - listTop();
-		int maxScroll = Math.max(0, buildRows().size() * ROW_H - viewportHeight);
+		int maxScroll = Math.max(0, currentRowCount() * ROW_H - viewportHeight);
 		scrollOffset = Math.clamp(scrollOffset - (int) scrollY * ROW_H, 0, maxScroll);
 		return true;
 	}
@@ -1199,7 +1527,7 @@ public class TaskManagerScreen extends Screen {
 		int mx = (int) event.x();
 		int trackX = this.width - 8;
 		if (mx >= trackX - 6 && mx <= trackX + 10) {
-			int totalHeight = buildRows().size() * ROW_H;
+			int totalHeight = currentRowCount() * ROW_H;
 			int viewportHeight = listBottom() - listTop();
 			if (totalHeight > viewportHeight) {
 				int trackH = listBottom() - listTop();
@@ -1207,7 +1535,7 @@ public class TaskManagerScreen extends Screen {
 				int maxScroll = totalHeight - viewportHeight;
 				int my = (int) event.y();
 				scrollOffset = (int) ((long) (my - listTop() - thumbH / 2) * maxScroll / (trackH - thumbH));
-				clampScrollToContent(buildRows().size());
+				clampScrollToContent(currentRowCount());
 			}
 			return true;
 		}
@@ -1233,7 +1561,16 @@ public class TaskManagerScreen extends Screen {
 
 	// ===== 过滤与格式化 =====
 	private List<Process> filteredProcesses() {
-		List<Process> all = new ArrayList<>(ProcessManager.getInstance().all());
+		List<Process> all;
+		if (!RemoteInstances.getInstance().isLocal()) {
+			// 远程：把快照桥接成本地 Process 模型，复用本地页签/搜索/分类渲染
+			all = new ArrayList<>();
+			for (ProcessInfo info : RemoteInstances.getInstance().snapshot()) {
+				all.add(toProcess(info));
+			}
+		} else {
+			all = new ArrayList<>(ProcessManager.getInstance().all());
+		}
 		String keyword = searchBox == null ? "" : searchBox.getValue().trim();
 		String lower = keyword.toLowerCase(java.util.Locale.ROOT);
 		List<Process> result = new ArrayList<>();
@@ -1253,6 +1590,29 @@ public class TaskManagerScreen extends Screen {
 		return result;
 	}
 
+	/** 把远程进程快照桥接成本地 Process 模型（无线程/目标，供本地渲染管线复用）。 */
+	private static Process toProcess(ProcessInfo info) {
+		ProcessSource source = "minecraft".equals(info.source())
+			? ProcessSource.game() : ProcessSource.mod(info.source());
+		ProcessCategory category = "entity".equals(info.category())
+			? ProcessCategory.ENTITY : ProcessCategory.GLOBAL;
+		ProcessSide side = "client".equals(info.side()) ? ProcessSide.CLIENT : ProcessSide.SERVER;
+		Process p = new Process((int) info.pid(), info.name(), source, category, side,
+			info.subCategory().isEmpty() ? null : info.subCategory(), null, -1, null);
+		p.setState(remoteStateToLocal(info.state()));
+		p.setUsage(new ResourceUsage(info.cpu(), -1L, -1L, Double.NaN));
+		return p;
+	}
+
+	private static ProcessState remoteStateToLocal(String state) {
+		return switch (state) {
+			case "paused" -> ProcessState.PAUSED;
+			case "terminated" -> ProcessState.TERMINATED;
+			case "pending_start" -> ProcessState.PENDING_START;
+			default -> ProcessState.RUNNING;
+		};
+	}
+
 	/** 搜索筛选：支持 `来源:xxx` / `状态:xxx` 前缀条件，否则按名称/PID 模糊匹配。 */
 	private boolean matchesFilter(Process p, String lower, String keyword) {
 		if (lower.isEmpty()) {
@@ -1267,7 +1627,7 @@ public class TaskManagerScreen extends Screen {
 			String st = lower.substring(lower.indexOf(':') + 1).trim();
 			return tr(stateKey(p.state())).contains(st) || stateKey(p.state()).contains(st);
 		}
-		String name = p.name();
+		String name = remoteProcName(p.name());
 		return name.toLowerCase(java.util.Locale.ROOT).contains(lower)
 			|| PinyinUtil.toFirstLetters(name).contains(lower)
 			|| PinyinUtil.toFullPinyin(name).contains(lower)

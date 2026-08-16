@@ -25,6 +25,7 @@ public final class ServerHandler extends SimpleChannelInboundHandler<String> {
 
 	public static final AttributeKey<Boolean> AUTHED = AttributeKey.valueOf(ServerHandler.class, "authenticated");
 	public static final AttributeKey<String> OPERATOR = AttributeKey.valueOf(ServerHandler.class, "operator");
+	public static final AttributeKey<String> NONCE = AttributeKey.valueOf(ServerHandler.class, "nonce");
 
 	private final TaskManagerServerConfig config;
 	private final ProcessDataProvider provider;
@@ -43,6 +44,13 @@ public final class ServerHandler extends SimpleChannelInboundHandler<String> {
 	@Override
 	public void channelActive(ChannelHandlerContext ctx) {
 		clients.add(ctx.channel());
+		// 认证挑战：生成随机 nonce 发给客户端，客户端用 token 做 HMAC 回传（token 不经过网络）
+		String nonce = Protocol.randomNonce();
+		ctx.channel().attr(NONCE).set(nonce);
+		JsonObject challenge = new JsonObject();
+		challenge.addProperty("type", "challenge");
+		challenge.addProperty("nonce", nonce);
+		Protocol.send(ctx.channel(), challenge);
 		authTimeoutTask = ctx.executor().schedule(() -> {
 			if (!isAuthed(ctx)) {
 				closeWith(ctx, Protocol.error("auth", null, "auth_timeout", "authentication timeout"));
@@ -109,8 +117,11 @@ public final class ServerHandler extends SimpleChannelInboundHandler<String> {
 	}
 
 	private void handleAuth(ChannelHandlerContext ctx, JsonObject req, JsonElement id) {
-		String token = Protocol.optString(req, "token");
-		if (token == null || !constantTimeEquals(token, config.token())) {
+		String response = Protocol.optString(req, "response");
+		String nonce = ctx.channel().attr(NONCE).get();
+		// 挑战-应答：客户端用 token 对 nonce 做 HMAC-SHA256，服务端用自身 token 复算比对（动态读取，支持运行时重置）
+		if (response == null || nonce == null
+			|| !constantTimeEquals(response, Protocol.hmacSha256(RemoteConfig.token(), nonce))) {
 			closeWith(ctx, Protocol.error("auth", id, "auth_failed", "invalid token"));
 			return;
 		}
@@ -130,7 +141,8 @@ public final class ServerHandler extends SimpleChannelInboundHandler<String> {
 	private void handleList(ChannelHandlerContext ctx, JsonElement id) {
 		submit(ctx, "list", id, () -> {
 			List<ProcessInfo> processes = provider.listProcesses();
-			return Protocol.listResponse(id, processes);
+			OverviewInfo overview = provider.overview();
+			return Protocol.listResponse(id, processes, overview);
 		});
 	}
 

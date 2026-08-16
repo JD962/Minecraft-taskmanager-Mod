@@ -1,0 +1,28 @@
+{
+	"schemaVersion": 1,
+	"id": "taskmanager-client",
+	"version": "${version}",
+	"name": "任务管理器（客户端）",
+	"description": "游戏内任务管理器客户端 UI：连接远程服务端管理进程（需服务端安装「任务管理器（服务端）」）。",
+	"authors": [
+		"WorkBuddy"
+	],
+	"contact": {},
+	"license": "CC0-1.0",
+	"icon": "assets/taskmanager/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"com.taskmanager.client.TaskManagerModClient"
+		]
+	},
+	"mixins": [
+		"taskmanager.client.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~26.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

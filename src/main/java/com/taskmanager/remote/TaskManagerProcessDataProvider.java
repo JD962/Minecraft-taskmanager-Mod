@@ -3,6 +3,7 @@ package com.taskmanager.remote;
 import com.taskmanager.core.OperationEngine;
 import com.taskmanager.core.ProcessManager;
 import com.taskmanager.model.Process;
+import com.taskmanager.sampling.ResourceSampler;
 import java.util.List;
 
 /**
@@ -30,9 +31,13 @@ public final class TaskManagerProcessDataProvider implements ProcessDataProvider
 				return new ProcessInfo(
 					p.pid(),
 					p.name(),
+					p.source().id(),
+					p.category().name().toLowerCase(java.util.Locale.ROOT),
+					p.subCategory(),
+					p.side().name().toLowerCase(java.util.Locale.ROOT),
 					p.state().name().toLowerCase(java.util.Locale.ROOT),
 					cpu,
-					Math.max(0L, u.totalMemory()));
+					u.totalMemory());
 			})
 			.toList();
 	}
@@ -56,5 +61,31 @@ public final class TaskManagerProcessDataProvider implements ProcessDataProvider
 			case START -> engine.start(process, operator);
 		};
 		return ok ? OperationResult.ok() : OperationResult.fail("operation failed");
+	}
+
+	@Override
+	public OverviewInfo overview() {
+		ResourceSampler sampler = ResourceSampler.getInstance();
+		TrafficCounter traffic = TrafficCounter.getInstance();
+		double gpu = sampler.gpuUsage();
+		long diskRead = -1;
+		long diskWrite = -1;
+		if (sampler.diskIoAvailable()) {
+			long[] rate = sampler.diskIoRate();
+			if (rate != null && rate.length >= 2) {
+				diskRead = rate[0];
+				diskWrite = rate[1];
+			}
+		}
+		return new OverviewInfo(
+			sampler.processCpuLoad(),
+			sampler.systemCpuLoad(),
+			sampler.heapUsed(),
+			sampler.heapCommitted(),
+			gpu,
+			traffic.bytesIn(),
+			traffic.bytesOut(),
+			diskRead,
+			diskWrite);
 	}
 }
