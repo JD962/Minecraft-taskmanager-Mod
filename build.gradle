@@ -16,6 +16,7 @@ repositories {
 		name = "Modrinth"
 		url = "https://api.modrinth.com/maven"
 	}
+	mavenCentral()
 }
 
 loom {
@@ -47,6 +48,10 @@ dependencies {
 	// 注意：Loom 1.17 为 no-remap 模式，用标准 compileOnly；版本号用 Modrinth version id 避免 "+" 被当作动态版本。
 	compileOnly "maven.modrinth:iris:oaD6KQls"          // Iris 1.11.2+26.2-fabric
 	compileOnly "maven.modrinth:sodium:a9YZH3ip"        // Sodium mc26.2-0.9.2-alpha.4-fabric
+
+	// 拼音搜索（BSD 许可，宽松，可闭源）；include 内嵌进最终 jar（jar-in-jar）
+	implementation "com.belerweb:pinyin4j:2.5.1"
+	include "com.belerweb:pinyin4j:2.5.1"
 }
 
 processResources {

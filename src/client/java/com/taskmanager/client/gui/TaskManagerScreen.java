@@ -12,6 +12,7 @@ import com.taskmanager.model.ProcessSide;
 import com.taskmanager.model.ThreadInfo;
 import com.taskmanager.sampling.MethodProfiler;
 import com.taskmanager.sampling.ResourceSampler;
+import com.taskmanager.util.PinyinUtil;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -979,14 +980,16 @@ public class TaskManagerScreen extends Screen {
 			return tr(stateKey(p.state())).contains(st) || stateKey(p.state()).contains(st);
 		}
 		return p.name().toLowerCase(java.util.Locale.ROOT).contains(lower)
+			|| PinyinUtil.toFirstLetters(p.name()).contains(lower)
 			|| String.valueOf(p.pid()).equals(keyword)
 			|| hasThreadMatching(p, lower);
 	}
 
-	/** 是否某线程名匹配关键词（支持按线程名搜索）。 */
+	/** 是否某线程名匹配关键词（支持按线程名搜索 + 拼音首字母）。 */
 	private static boolean hasThreadMatching(Process p, String lower) {
 		for (ThreadInfo t : p.threads()) {
-			if (t.threadName().toLowerCase(java.util.Locale.ROOT).contains(lower)) {
+			if (t.threadName().toLowerCase(java.util.Locale.ROOT).contains(lower)
+				|| PinyinUtil.toFirstLetters(t.threadName()).contains(lower)) {
 				return true;
 			}
 		}
