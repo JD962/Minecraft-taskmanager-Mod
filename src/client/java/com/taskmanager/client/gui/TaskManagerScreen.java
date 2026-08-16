@@ -51,6 +51,11 @@ public class TaskManagerScreen extends Screen {
 	private EditBox runTaskNameBox;
 	private int selectedPid = -1;
 	private long selectedThreadId = -1;
+	/** 多选集合（Ctrl 点击 toggle；Shift 区间选择）；空集表示未多选。 */
+	private final Set<Integer> selectedPids = new HashSet<>();
+	private final Set<Long> selectedThreadIds = new HashSet<>();
+	/** Shift 区间选择的锚点（扁平化 rows 列表索引）。 */
+	private int anchorRowIndex = -1;
 	private final Set<Integer> expandedProcesses = new HashSet<>();
 	private final Set<Long> expandedThreads = new HashSet<>();
 	private final Set<String> expandedSources = new HashSet<>();
@@ -438,7 +443,7 @@ public class TaskManagerScreen extends Screen {
 
 	private void renderProcessRow(GuiGraphicsExtractor graphics, Process p, int depth, int x, int screenY, boolean hasChildren) {
 		int ind = depth * 16;
-		if (p.pid() == selectedPid) {
+		if (p.pid() == selectedPid || selectedPids.contains(p.pid())) {
 			graphics.fill(15, screenY - 1, x + 440, screenY + 13, accent());
 		}
 		boolean expanded = expandedProcesses.contains(p.pid());
@@ -456,7 +461,7 @@ public class TaskManagerScreen extends Screen {
 
 	private void renderThreadRow(GuiGraphicsExtractor graphics, ThreadInfo thread, int depth, int x, int screenY, boolean hasChildren) {
 		int ind = depth * 16;
-		if (thread.threadId() == selectedThreadId) {
+		if (thread.threadId() == selectedThreadId || selectedThreadIds.contains(thread.threadId())) {
 			graphics.fill(15, screenY - 1, x + 440, screenY + 13, accent());
 		}
 		boolean expanded = expandedThreads.contains(thread.threadId());
@@ -625,6 +630,54 @@ public class TaskManagerScreen extends Screen {
 			}
 		}
 		return null;
+	}
+
+	/** Shift 区间选择：把锚点到当前行之间（含两端）的所有进程/线程加入多选集合。 */
+	private void selectRange(int rowIndex, List<Row> rows) {
+		int lo = anchorRowIndex < 0 ? rowIndex : Math.min(anchorRowIndex, rowIndex);
+		int hi = anchorRowIndex < 0 ? rowIndex : Math.max(anchorRowIndex, rowIndex);
+		for (int i = lo; i <= hi && i < rows.size(); i++) {
+			Row r = rows.get(i);
+			if (r.kind() == KIND_PROCESS) {
+				selectedPids.add(r.process().pid());
+			} else if (r.kind() == KIND_THREAD) {
+				selectedThreadIds.add(r.thread().threadId());
+			}
+		}
+	}
+
+	/** 当前选中的进程列表：多选集合非空时返回多选，否则回退单选。 */
+	private List<Process> selectedProcesses() {
+		List<Process> result = new ArrayList<>();
+		if (!selectedPids.isEmpty()) {
+			for (int pid : selectedPids) {
+				Process p = ProcessManager.getInstance().get(pid);
+				if (p != null) {
+					result.add(p);
+				}
+			}
+			return result;
+		}
+		if (selectedPid >= 0) {
+			Process p = ProcessManager.getInstance().get(selectedPid);
+			if (p != null) {
+				result.add(p);
+			}
+		}
+		return result;
+	}
+
+	/** 当前选中的线程 ID 列表：多选集合非空时返回多选，否则回退单选。 */
+	private List<Long> selectedThreadIdList() {
+		List<Long> result = new ArrayList<>();
+		if (!selectedThreadIds.isEmpty()) {
+			result.addAll(selectedThreadIds);
+			return result;
+		}
+		if (selectedThreadId >= 0) {
+			result.add(selectedThreadId);
+		}
+		return result;
 	}
 
 	/** 调整线程优先级：仅允许非核心线程，核心线程（渲染/服务端/Netty/JFR/GC 等）不可调。 */
@@ -909,7 +962,8 @@ public class TaskManagerScreen extends Screen {
 		int bottom = listBottom();
 		// 鼠标必须在列表区域内（顶部页签以上、底部面板以下），且避开右侧滚动条区域（width-14 起），避免拖动滚动条时误触列表行
 		if (my >= top && my < bottom && mx < this.width - 14) {
-			for (Row row : rows) {
+			for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
+				Row row = rows.get(rowIndex);
 				int screenY = top + row.y() - scrollOffset;
 				if (screenY >= bottom) {
 					break; // 行按 y 递增，超出列表底界后不再匹配
@@ -962,9 +1016,26 @@ public class TaskManagerScreen extends Screen {
 									expandedProcesses.add(p.pid());
 								}
 							} else {
-								// 点击行其他区域：选中进程 + 确保展开（看到线程）
+								// 点击行其他区域：多选（Ctrl toggle / Shift 区间 / 无修饰单选）+ 确保展开
 								selectedThreadId = -1;
-								selectedPid = p.pid();
+								if (event.hasControlDown()) {
+									if (selectedPids.contains(p.pid())) {
+										selectedPids.remove(p.pid());
+									} else {
+										selectedPids.add(p.pid());
+									}
+									selectedPid = p.pid();
+									anchorRowIndex = rowIndex;
+								} else if (event.hasShiftDown()) {
+									selectRange(rowIndex, rows);
+									selectedPid = p.pid();
+								} else {
+									selectedPids.clear();
+									selectedThreadIds.clear();
+									selectedPids.add(p.pid());
+									selectedPid = p.pid();
+									anchorRowIndex = rowIndex;
+								}
 								expandedProcesses.add(p.pid());
 							}
 							return true;
@@ -980,9 +1051,26 @@ public class TaskManagerScreen extends Screen {
 									expandedThreads.add(t.threadId());
 								}
 							} else {
-								// 点击行其他区域：选中线程（详情面板显示线程信息 + 线程操作）
-								selectedThreadId = t.threadId();
+								// 点击行其他区域：多选线程
 								selectedPid = -1;
+								if (event.hasControlDown()) {
+									if (selectedThreadIds.contains(t.threadId())) {
+										selectedThreadIds.remove(t.threadId());
+									} else {
+										selectedThreadIds.add(t.threadId());
+									}
+									selectedThreadId = t.threadId();
+									anchorRowIndex = rowIndex;
+								} else if (event.hasShiftDown()) {
+									selectRange(rowIndex, rows);
+									selectedThreadId = t.threadId();
+								} else {
+									selectedPids.clear();
+									selectedThreadIds.clear();
+									selectedThreadIds.add(t.threadId());
+									selectedThreadId = t.threadId();
+									anchorRowIndex = rowIndex;
+								}
 							}
 							return true;
 						}
@@ -1012,60 +1100,63 @@ public class TaskManagerScreen extends Screen {
 				return true;
 			}
 		}
-		// 线程操作按钮（选中线程时：暂停/恢复/终止 + 优先级）
-		if (selectedThreadId >= 0) {
+		// 线程操作按钮（选中线程时：暂停/恢复/终止 + 优先级，支持多选批量）
+		List<Long> threadTargets = selectedThreadIdList();
+		if (!threadTargets.isEmpty()) {
 			int panelTop = panelTop();
+			OperationEngine engine = OperationEngine.getInstance();
 			if (hit(mx, my, 20, panelTop + 44)) {
-				OperationEngine.getInstance().pauseThread(selectedThreadId, "本地用户");
+				for (long tid : threadTargets) engine.pauseThread(tid, "本地用户");
 				return true;
 			}
 			if (hit(mx, my, 78, panelTop + 44)) {
-				OperationEngine.getInstance().resumeThread(selectedThreadId, "本地用户");
+				for (long tid : threadTargets) engine.resumeThread(tid, "本地用户");
 				return true;
 			}
 			if (hit(mx, my, 136, panelTop + 44)) {
-				OperationEngine.getInstance().terminateThread(selectedThreadId, "本地用户");
+				for (long tid : threadTargets) engine.terminateThread(tid, "本地用户");
 				return true;
 			}
 			if (hit(mx, my, 194, panelTop + 44)) {
-				adjustThreadPriority(selectedThreadId, -1);
+				for (long tid : threadTargets) adjustThreadPriority(tid, -1);
 				return true;
 			}
 			if (hit(mx, my, 262, panelTop + 44)) {
-				adjustThreadPriority(selectedThreadId, 1);
+				for (long tid : threadTargets) adjustThreadPriority(tid, 1);
 				return true;
 			}
 		}
-		// 进程操作按钮（需选中进程）
-		Process selected = selectedPid < 0 ? null : ProcessManager.getInstance().get(selectedPid);
-		if (selected != null) {
+		// 进程操作按钮（选中进程，支持多选批量操作）
+		List<Process> selected = selectedProcesses();
+		if (!selected.isEmpty()) {
 			int panelTop = panelTop();
+			OperationEngine engine = OperationEngine.getInstance();
 			if (hit(mx, my, 20, panelTop + 26)) {
-				OperationEngine.getInstance().pause(selected, "本地用户");
+				for (Process p : selected) engine.pause(p, "本地用户");
 				return true;
 			}
 			if (hit(mx, my, 78, panelTop + 26)) {
-				OperationEngine.getInstance().resume(selected, "本地用户");
+				for (Process p : selected) engine.resume(p, "本地用户");
 				return true;
 			}
 			if (hit(mx, my, 136, panelTop + 26)) {
-				OperationEngine.getInstance().terminate(selected, "本地用户");
+				for (Process p : selected) engine.terminate(p, "本地用户");
 				return true;
 			}
 			if (hit(mx, my, 194, panelTop + 26)) {
-				OperationEngine.getInstance().forceTerminate(selected, "本地用户");
+				for (Process p : selected) engine.forceTerminate(p, "本地用户");
 				return true;
 			}
 			if (hit(mx, my, 274, panelTop + 26)) {
-				OperationEngine.getInstance().restart(selected, "本地用户");
+				for (Process p : selected) engine.restart(p, "本地用户");
 				return true;
 			}
 			if (hit(mx, my, 20, panelTop + 50)) {
-				OperationEngine.getInstance().setPriority(selected, Math.max(1, selected.priority() - 1), "本地用户");
+				for (Process p : selected) engine.setPriority(p, Math.max(1, p.priority() - 1), "本地用户");
 				return true;
 			}
 			if (hit(mx, my, 88, panelTop + 50)) {
-				OperationEngine.getInstance().setPriority(selected, Math.min(5, selected.priority() + 1), "本地用户");
+				for (Process p : selected) engine.setPriority(p, Math.min(5, p.priority() + 1), "本地用户");
 				return true;
 			}
 		}
