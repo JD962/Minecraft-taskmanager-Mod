@@ -6,6 +6,7 @@ import com.taskmanager.core.OperationLog;
 import com.taskmanager.core.ProcessManager;
 import com.taskmanager.debug.DebugLogger;
 import com.taskmanager.debug.PrcExporter;
+import com.taskmanager.debug.TestTask;
 import com.taskmanager.model.Process;
 import com.taskmanager.model.ProcessCategory;
 import com.taskmanager.model.ProcessSide;
@@ -56,6 +57,9 @@ public class TaskManagerScreen extends Screen {
 	private boolean treeInitialized = false;
 	private int scrollOffset = 0;
 	private boolean showSettings = false;
+	private boolean showRunMenu = false;
+	/** 运行新任务二级菜单用：已创建任务计数器（用于命名）。 */
+	private int runTaskCounter = 0;
 	/** 方法级采样快照缓存（1s 刷新一次，避免渲染循环每帧重建大 Map 导致堆压力）。 */
 	private Map<String, List<MethodProfiler.MethodNode>> cachedMethodSnapshot = Map.of();
 	private long lastSnapshotTime = 0;
@@ -71,6 +75,8 @@ public class TaskManagerScreen extends Screen {
 		this.searchBox = new EditBox(this.font, 20, 58, 240, 16, Component.literal("搜索"));
 		this.searchBox.setValue("");
 		this.addRenderableWidget(this.searchBox);
+		// 默认聚焦搜索框，确保中文 IME 字符事件（charTyped/preeditUpdated）能路由到它
+		this.setFocused(this.searchBox);
 		// 打开 UI 时启动方法级采样（周期跟随刷新频率），关闭 UI 时停止
 		MethodProfiler.getInstance().start(
 			MethodProfiler.periodForInterval(ResourceSampler.getInstance().intervalMs()));
@@ -97,6 +103,9 @@ public class TaskManagerScreen extends Screen {
 		renderLogs(graphics);
 		if (showSettings) {
 			renderSettings(graphics);
+		}
+		if (showRunMenu) {
+			renderRunMenu(graphics);
 		}
 		// 渲染 widget（EditBox 搜索框等），置于最上层
 		super.extractRenderState(graphics, mouseX, mouseY, partialTick);
@@ -400,9 +409,10 @@ public class TaskManagerScreen extends Screen {
 		tmText(graphics, hasChildren ? (expanded ? "v" : ">") : " ", x + ind, screenY, text());
 		tmText(graphics, String.valueOf(p.pid()), x + ind + 12, screenY, text());
 		tmText(graphics, p.name(), x + 50 + ind, screenY, text());
-		tmText(graphics, tr(stateKey(p.state())), x + colState() + ind, screenY, stateColor(p));
-		tmText(graphics, cpuText(p), x + colCpu() + ind, screenY, heatColor(p.usage().cpuUsage()));
-		tmText(graphics, memoryText(p), x + colMem() + ind, screenY, textMuted());
+		// 数据列（状态/CPU/内存）与表头对齐，不随缩进偏移
+		tmText(graphics, tr(stateKey(p.state())), x + colState(), screenY, stateColor(p));
+		tmText(graphics, cpuText(p), x + colCpu(), screenY, heatColor(p.usage().cpuUsage()));
+		tmText(graphics, memoryText(p), x + colMem(), screenY, textMuted());
 	}
 
 	private void renderThreadRow(GuiGraphicsExtractor graphics, ThreadInfo thread, int depth, int x, int screenY, boolean hasChildren) {
@@ -414,9 +424,10 @@ public class TaskManagerScreen extends Screen {
 		tmText(graphics, hasChildren ? (expanded ? "v" : ">") : " ", x + ind, screenY, textMuted());
 		String prefix = thread.daemon() ? "*" : "-";
 		tmText(graphics, prefix + " " + thread.threadName(), x + ind + 12, screenY, textMuted());
-		tmText(graphics, stateText(thread.state()), x + colState() + ind, screenY, stateColor2(thread.state()));
-		tmText(graphics, cpuText2(thread), x + colCpu() + ind, screenY, heatColor(thread.usage().cpuUsage()));
-		tmText(graphics, allocRateText(thread.allocatedRate()), x + colMem() + ind, screenY, textMuted());
+		// 数据列与表头对齐，不随缩进偏移
+		tmText(graphics, stateText(thread.state()), x + colState(), screenY, stateColor2(thread.state()));
+		tmText(graphics, cpuText2(thread), x + colCpu(), screenY, heatColor(thread.usage().cpuUsage()));
+		tmText(graphics, allocRateText(thread.allocatedRate()), x + colMem(), screenY, textMuted());
 	}
 
 	private static String cpuText2(ThreadInfo t) {
@@ -632,6 +643,29 @@ public class TaskManagerScreen extends Screen {
 		renderActionButton(graphics, tr("taskmanager.settings.close"), cx + 92, cy + 172);
 	}
 
+	/** 运行新任务二级菜单：展示可创建的任务类型，用户选择后创建真实受管任务。 */
+	private void renderRunMenu(GuiGraphicsExtractor graphics) {
+		int cx = this.width / 2 - 140;
+		int cy = this.height / 2 - 90;
+		graphics.fill(cx, cy, cx + 280, cy + 180, panel());
+		tmCentered(graphics, tr("taskmanager.run.title"), cx + 140, cy + 8, text());
+		tmText(graphics, tr("taskmanager.run.desc"), cx + 12, cy + 28, textMuted());
+		// 可创建的任务类型
+		renderActionButton(graphics, tr("taskmanager.run.test_task"), cx + 12, cy + 48, 120);
+		renderActionButton(graphics, tr("taskmanager.run.close"), cx + 104, cy + 150);
+	}
+
+	/** 创建并注册一个受管测试任务（真实守护线程，可暂停/恢复/终止/调优先级）。 */
+	private void createRunTask() {
+		runTaskCounter++;
+		String name = "TaskManager-Run-" + runTaskCounter;
+		TestTask task = new TestTask(name);
+		task.start();
+		Process process = ProcessManager.getInstance().registerTask(name, task);
+		LOGGER.info("[TM] 运行新任务创建: PID {} | 线程 {}", process.pid(), name);
+		showRunMenu = false;
+	}
+
 	// ===== 交互 =====
 	@Override
 	public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
@@ -642,6 +676,24 @@ public class TaskManagerScreen extends Screen {
 		// 关闭按钮（右上角 X）
 		if (mx >= this.width - 24 && mx < this.width - 4 && my >= 5 && my < 21) {
 			this.onClose();
+			return true;
+		}
+		// 运行新任务二级菜单（严格模态，优先于设置面板与列表）
+		if (showRunMenu) {
+			int cx = this.width / 2 - 140;
+			int cy = this.height / 2 - 90;
+			if (hit(mx, my, cx + 12, cy + 48, 120)) {
+				createRunTask();
+				return true;
+			}
+			if (hit(mx, my, cx + 104, cy + 150)) {
+				showRunMenu = false;
+				return true;
+			}
+			// 面板外关闭并吞事件
+			if (mx < cx || mx >= cx + 280 || my < cy || my >= cy + 180) {
+				showRunMenu = false;
+			}
 			return true;
 		}
 		// 设置面板（严格模态，最优先）：打开时只响应面板内点击，面板外关闭并吞事件
@@ -806,12 +858,9 @@ public class TaskManagerScreen extends Screen {
 				showSettings = !showSettings;
 				return true;
 			}
-			// 运行新任务：选中进程则启动；未选中则消费事件（避免误触底层列表）
+			// 运行新任务：打开二级菜单（创建新的受管任务，而非复活已销毁的 PID）
 			if (hit(mx, my, 156, panelTop + 50, 84)) {
-				Process runSelected = selectedPid < 0 ? null : ProcessManager.getInstance().get(selectedPid);
-				if (runSelected != null) {
-					OperationEngine.getInstance().start(runSelected, "本地用户");
-				}
+				showRunMenu = true;
 				return true;
 			}
 		}
@@ -979,17 +1028,21 @@ public class TaskManagerScreen extends Screen {
 			String st = lower.substring(lower.indexOf(':') + 1).trim();
 			return tr(stateKey(p.state())).contains(st) || stateKey(p.state()).contains(st);
 		}
-		return p.name().toLowerCase(java.util.Locale.ROOT).contains(lower)
-			|| PinyinUtil.toFirstLetters(p.name()).contains(lower)
+		String name = p.name();
+		return name.toLowerCase(java.util.Locale.ROOT).contains(lower)
+			|| PinyinUtil.toFirstLetters(name).contains(lower)
+			|| PinyinUtil.toFullPinyin(name).contains(lower)
 			|| String.valueOf(p.pid()).equals(keyword)
 			|| hasThreadMatching(p, lower);
 	}
 
-	/** 是否某线程名匹配关键词（支持按线程名搜索 + 拼音首字母）。 */
+	/** 是否某线程名匹配关键词（支持按线程名搜索 + 拼音首字母/全拼）。 */
 	private static boolean hasThreadMatching(Process p, String lower) {
 		for (ThreadInfo t : p.threads()) {
-			if (t.threadName().toLowerCase(java.util.Locale.ROOT).contains(lower)
-				|| PinyinUtil.toFirstLetters(t.threadName()).contains(lower)) {
+			String name = t.threadName();
+			if (name.toLowerCase(java.util.Locale.ROOT).contains(lower)
+				|| PinyinUtil.toFirstLetters(name).contains(lower)
+				|| PinyinUtil.toFullPinyin(name).contains(lower)) {
 				return true;
 			}
 		}
@@ -1028,13 +1081,13 @@ public class TaskManagerScreen extends Screen {
 	}
 
 	private static String memoryText(Process p) {
-		long heap = p.usage().heapMemory();
-		if (heap < 0) {
+		if (p.category() == ProcessCategory.ENTITY) {
 			// 实体进程为逻辑容器，无独立内存
 			return "-";
 		}
-		// 全局进程共享 JVM 堆，显示堆已用数值（共享语义在详情面板标注）
-		return formatBytes(heap);
+		// 全局进程共享同一个 JVM 堆，逐个显示相同数值是误导，统一标记「共享」
+		// （具体堆 used/committed 数值见顶部概览面板与详情面板）
+		return "共享";
 	}
 
 	/** 分配速率格式化（字节/秒），无基线返回 "-"。 */
