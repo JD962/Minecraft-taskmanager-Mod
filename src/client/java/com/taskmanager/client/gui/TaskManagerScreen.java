@@ -11,6 +11,7 @@ import com.taskmanager.model.Process;
 import com.taskmanager.model.ProcessCategory;
 import com.taskmanager.model.ProcessSide;
 import com.taskmanager.model.ThreadInfo;
+import com.taskmanager.registry.ClassificationRegistry;
 import com.taskmanager.sampling.MethodProfiler;
 import com.taskmanager.sampling.ResourceSampler;
 import com.taskmanager.util.PinyinUtil;
@@ -58,6 +59,7 @@ public class TaskManagerScreen extends Screen {
 	private int scrollOffset = 0;
 	private boolean showSettings = false;
 	private boolean showRunMenu = false;
+	private boolean showCategories = false;
 	/** 运行新任务二级菜单用：已创建任务计数器（用于命名）。 */
 	private int runTaskCounter = 0;
 	/** 方法级采样快照缓存（1s 刷新一次，避免渲染循环每帧重建大 Map 导致堆压力）。 */
@@ -97,6 +99,7 @@ public class TaskManagerScreen extends Screen {
 		renderThemeButton(graphics);
 		renderCloseButton(graphics);
 		renderTabs(graphics);
+		renderCategoryButton(graphics);
 		renderOverview(graphics);
 		renderProcessList(graphics);
 		renderDetailPanel(graphics);
@@ -106,6 +109,9 @@ public class TaskManagerScreen extends Screen {
 		}
 		if (showRunMenu) {
 			renderRunMenu(graphics);
+		}
+		if (showCategories) {
+			renderCategories(graphics);
 		}
 		// 渲染 widget（EditBox 搜索框等），置于最上层
 		super.extractRenderState(graphics, mouseX, mouseY, partialTick);
@@ -138,6 +144,14 @@ public class TaskManagerScreen extends Screen {
 			graphics.fill(x, y, x + tabWidth, y + 20, active ? accent() : button());
 			tmCentered(graphics, tr(TABS[i]), x + tabWidth / 2, y + 6, active ? 0xFFFFFFFF : textMuted());
 		}
+	}
+
+	/** 「更多」按钮：打开二级窗口展示注册的自定义分类（位于搜索框右侧）。 */
+	private void renderCategoryButton(GuiGraphicsExtractor graphics) {
+		int x = 270;
+		int y = 58;
+		graphics.fill(x, y, x + 44, y + 16, button());
+		tmCentered(graphics, tr("taskmanager.cat.more"), x + 22, y + 4, text());
 	}
 
 	// ===== 系统资源概览 =====
@@ -408,7 +422,7 @@ public class TaskManagerScreen extends Screen {
 		boolean expanded = expandedProcesses.contains(p.pid());
 		tmText(graphics, hasChildren ? (expanded ? "v" : ">") : " ", x + ind, screenY, text());
 		tmText(graphics, String.valueOf(p.pid()), x + ind + 12, screenY, text());
-		tmText(graphics, p.name(), x + 50 + ind, screenY, text());
+		renderHighlighted(graphics, p.name(), currentKeyword(), x + 50 + ind, screenY, text());
 		// 数据列（状态/CPU/内存）与表头对齐，不随缩进偏移
 		tmText(graphics, tr(stateKey(p.state())), x + colState(), screenY, stateColor(p));
 		tmText(graphics, cpuText(p), x + colCpu(), screenY, heatColor(p.usage().cpuUsage()));
@@ -423,11 +437,39 @@ public class TaskManagerScreen extends Screen {
 		boolean expanded = expandedThreads.contains(thread.threadId());
 		tmText(graphics, hasChildren ? (expanded ? "v" : ">") : " ", x + ind, screenY, textMuted());
 		String prefix = thread.daemon() ? "*" : "-";
-		tmText(graphics, prefix + " " + thread.threadName(), x + ind + 12, screenY, textMuted());
+		tmText(graphics, prefix + " ", x + ind + 12, screenY, textMuted());
+		renderHighlighted(graphics, thread.threadName(), currentKeyword(), x + ind + 24, screenY, textMuted());
 		// 数据列与表头对齐，不随缩进偏移
 		tmText(graphics, stateText(thread.state()), x + colState(), screenY, stateColor2(thread.state()));
 		tmText(graphics, cpuText2(thread), x + colCpu(), screenY, heatColor(thread.usage().cpuUsage()));
 		tmText(graphics, allocRateText(thread.allocatedRate()), x + colMem(), screenY, textMuted());
+	}
+
+	/** 当前搜索关键字（trim 后），用于高亮匹配结果。 */
+	private String currentKeyword() {
+		return searchBox == null ? "" : searchBox.getValue().trim();
+	}
+
+	/** 渲染带高亮的文本：关键字在文本中字面出现时高亮该段；拼音匹配则整体高亮。 */
+	private void renderHighlighted(GuiGraphicsExtractor g, String text, String keyword, int x, int y, int normalColor) {
+		if (keyword == null || keyword.isEmpty()) {
+			tmText(g, text, x, y, normalColor);
+			return;
+		}
+		int idx = text.toLowerCase(java.util.Locale.ROOT).indexOf(keyword.toLowerCase(java.util.Locale.ROOT));
+		if (idx < 0) {
+			// 无字面子串匹配（可能是拼音/首字母匹配），整体用高亮色标示
+			tmText(g, text, x, y, 0xFFFFEE55);
+			return;
+		}
+		String before = text.substring(0, idx);
+		String match = text.substring(idx, idx + keyword.length());
+		String after = text.substring(idx + keyword.length());
+		tmText(g, before, x, y, normalColor);
+		int x2 = x + this.font.width(before);
+		tmText(g, match, x2, y, 0xFFFFEE55);
+		int x3 = x2 + this.font.width(match);
+		tmText(g, after, x3, y, normalColor);
 	}
 
 	private static String cpuText2(ThreadInfo t) {
@@ -666,6 +708,25 @@ public class TaskManagerScreen extends Screen {
 		showRunMenu = false;
 	}
 
+	/** 「更多」二级窗口：展示模组/游戏注册的自定义实体分类（未平铺到主列表）。 */
+	private void renderCategories(GuiGraphicsExtractor graphics) {
+		int cx = this.width / 2 - 140;
+		int cy = this.height / 2 - 90;
+		graphics.fill(cx, cy, cx + 280, cy + 180, panel());
+		tmCentered(graphics, tr("taskmanager.cat.title"), cx + 140, cy + 8, text());
+		List<ClassificationRegistry.Category> categories = ClassificationRegistry.categories();
+		if (categories.isEmpty()) {
+			tmText(graphics, tr("taskmanager.cat.empty"), cx + 12, cy + 32, textMuted());
+		} else {
+			int y = cy + 32;
+			for (ClassificationRegistry.Category c : categories) {
+				tmText(graphics, "- " + c.name(), cx + 12, y, text());
+				y += 14;
+			}
+		}
+		renderActionButton(graphics, tr("taskmanager.cat.close"), cx + 104, cy + 150);
+	}
+
 	// ===== 交互 =====
 	@Override
 	public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
@@ -693,6 +754,19 @@ public class TaskManagerScreen extends Screen {
 			// 面板外关闭并吞事件
 			if (mx < cx || mx >= cx + 280 || my < cy || my >= cy + 180) {
 				showRunMenu = false;
+			}
+			return true;
+		}
+		// 「更多」分类二级窗口（严格模态）
+		if (showCategories) {
+			int cx = this.width / 2 - 140;
+			int cy = this.height / 2 - 90;
+			if (hit(mx, my, cx + 104, cy + 150)) {
+				showCategories = false;
+				return true;
+			}
+			if (mx < cx || mx >= cx + 280 || my < cy || my >= cy + 180) {
+				showCategories = false;
 			}
 			return true;
 		}
@@ -756,6 +830,11 @@ public class TaskManagerScreen extends Screen {
 				scrollOffset = 0;
 				return true;
 			}
+		}
+		// 「更多」按钮（搜索框右侧）
+		if (mx >= 270 && mx < 314 && my >= 58 && my < 74) {
+			showCategories = true;
+			return true;
 		}
 		// 进程/线程列表点击（选中/展开）——用与渲染一致的扁平化布局做命中测试，避免偏移
 		List<Row> rows = buildRows();

@@ -7,6 +7,7 @@ import com.taskmanager.model.Process;
 import com.taskmanager.model.ProcessCategory;
 import com.taskmanager.model.ProcessSide;
 import com.taskmanager.model.ProcessSource;
+import com.taskmanager.registry.ClassificationRegistry;
 import com.taskmanager.registry.ProcessAdapterRegistry;
 import java.util.Collection;
 import java.util.List;
@@ -211,8 +212,12 @@ public final class ProcessManager {
 		return pid;
 	}
 
-	/** 实体细分类别：玩家 / 掉落物实体 / 生物 / 其他实体。 */
+	/** 实体细分类别：注册的自定义分类优先，其次玩家 / 掉落物实体 / 生物 / 其他实体。 */
 	private static String classifyEntity(Entity entity) {
+		String custom = ClassificationRegistry.match(entity);
+		if (custom != null) {
+			return custom;
+		}
 		if (entity instanceof Player) {
 			return "玩家";
 		}
