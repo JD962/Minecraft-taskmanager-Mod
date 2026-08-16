@@ -6,7 +6,7 @@ import com.taskmanager.core.OperationLog;
 import com.taskmanager.core.ProcessManager;
 import com.taskmanager.debug.DebugLogger;
 import com.taskmanager.debug.PrcExporter;
-import com.taskmanager.debug.TestTask;
+import com.taskmanager.debug.RunnableTask;
 import com.taskmanager.model.Process;
 import com.taskmanager.model.ProcessCategory;
 import com.taskmanager.model.ProcessSide;
@@ -178,7 +178,18 @@ public class TaskManagerScreen extends Screen {
 		long netIn = TrafficCounter.getInstance().bytesIn();
 		long netOut = TrafficCounter.getInstance().bytesOut();
 		String netStr = String.format("网络 ↑%s ↓%s", formatBytes(netOut), formatBytes(netIn));
-		tmText(graphics, String.format("JVM CPU %s | 系统 CPU %s | 堆 %s | GPU %s | %s", cpuStr, sysStr, memStr, gpuStr, netStr),
+		// 磁盘 I/O 速率（累计值意义有限，展示速率；不可用显示「不支持」）
+		String ioStr;
+		long[] ioRate = sampler.diskIoRate();
+		if (!sampler.diskIoAvailable()) {
+			ioStr = "磁盘 I/O 不支持";
+		} else if (ioRate == null) {
+			ioStr = "磁盘 读 N/A 写 N/A";
+		} else {
+			ioStr = String.format("磁盘 读%s/s 写%s/s", formatBytes(ioRate[0]), formatBytes(ioRate[1]));
+		}
+		tmText(graphics, String.format("JVM CPU %s | 系统 CPU %s | 堆 %s | GPU %s | %s | %s",
+				cpuStr, sysStr, memStr, gpuStr, netStr, ioStr),
 			260, 40, textMuted());
 	}
 
@@ -433,9 +444,10 @@ public class TaskManagerScreen extends Screen {
 		boolean expanded = expandedProcesses.contains(p.pid());
 		// PID 固定列（与表头对齐，不随树形缩进偏移）
 		tmText(graphics, String.valueOf(p.pid()), x, screenY, text());
-		// 箭头 + 名称在名称列（x+50 起）随深度缩进
+		// 箭头 + 名称在名称列（x+50 起）随深度缩进；名称截断避免压到状态列
 		tmText(graphics, hasChildren ? (expanded ? "v" : ">") : " ", x + 50 + ind, screenY, text());
-		renderHighlighted(graphics, p.name(), currentKeyword(), x + 62 + ind, screenY, text());
+		int nameMaxW = Math.max(20, colState() - 62 - ind - 8);
+		renderHighlighted(graphics, fitName(p.name(), nameMaxW), currentKeyword(), x + 62 + ind, screenY, text());
 		// 数据列（状态/CPU/内存）与表头对齐，不随缩进偏移
 		tmText(graphics, tr(stateKey(p.state())), x + colState(), screenY, stateColor(p));
 		tmText(graphics, cpuText(p), x + colCpu(), screenY, heatColor(p.usage().cpuUsage()));
@@ -448,10 +460,11 @@ public class TaskManagerScreen extends Screen {
 			graphics.fill(15, screenY - 1, x + 440, screenY + 13, accent());
 		}
 		boolean expanded = expandedThreads.contains(thread.threadId());
-		// 线程无 PID，箭头 + 名称在名称列随深度缩进
+		// 线程无 PID，箭头 + 名称在名称列随深度缩进；名称截断避免压到状态列
 		tmText(graphics, hasChildren ? (expanded ? "v" : ">") : " ", x + 50 + ind, screenY, textMuted());
 		String prefix = thread.daemon() ? "*" : "-";
-		renderHighlighted(graphics, prefix + " " + thread.threadName(), currentKeyword(), x + 62 + ind, screenY, textMuted());
+		int nameMaxW = Math.max(20, colState() - 62 - ind - 8);
+		renderHighlighted(graphics, fitName(prefix + " " + thread.threadName(), nameMaxW), currentKeyword(), x + 62 + ind, screenY, textMuted());
 		// 数据列与表头对齐，不随缩进偏移
 		tmText(graphics, stateText(thread.state()), x + colState(), screenY, stateColor2(thread.state()));
 		tmText(graphics, cpuText2(thread), x + colCpu(), screenY, heatColor(thread.usage().cpuUsage()));
@@ -461,6 +474,20 @@ public class TaskManagerScreen extends Screen {
 	/** 当前搜索关键字（trim 后），用于高亮匹配结果。 */
 	private String currentKeyword() {
 		return searchBox == null ? "" : searchBox.getValue().trim();
+	}
+
+	/** 按最大像素宽度截断名称，超出部分以「...」结尾，避免长名称压到状态列。 */
+	private String fitName(String text, int maxWidth) {
+		if (text == null || maxWidth <= 0 || this.font.width(text) <= maxWidth) {
+			return text;
+		}
+		String dots = "...";
+		int dotsWidth = this.font.width(dots);
+		if (dotsWidth >= maxWidth) {
+			return "";
+		}
+		String truncated = this.font.plainSubstrByWidth(text, maxWidth - dotsWidth);
+		return truncated + dots;
 	}
 
 	/** 渲染带高亮的文本：关键字在文本中字面出现时高亮该段；拼音匹配则整体高亮。 */
@@ -712,15 +739,35 @@ public class TaskManagerScreen extends Screen {
 		renderActionButton(graphics, tr("taskmanager.run.close"), cx + 104, cy + 150);
 	}
 
-	/** 创建并注册一个受管测试任务（真实守护线程，可暂停/恢复/终止/调优先级），名称为用户输入。 */
+	/** 创建任务：输入「全限定类名」（实现 Runnable），反射加载并以真实守护线程启动，纳入进程管理。 */
 	private void createRunTask() {
 		runTaskCounter++;
 		String input = runTaskNameBox == null ? "" : runTaskNameBox.getValue().trim();
-		String name = input.isEmpty() ? "TaskManager-Run-" + runTaskCounter : input + "-" + runTaskCounter;
-		TestTask task = new TestTask(name);
-		task.start();
-		Process process = ProcessManager.getInstance().registerTask(name, task);
-		LOGGER.info("[TM] 运行新任务创建: PID {} | 线程 {}", process.pid(), name);
+		if (input.isEmpty()) {
+			LOGGER.info("[TM] 运行新任务：未输入类名");
+			showRunMenu = false;
+			runTaskNameBox.setVisible(false);
+			return;
+		}
+		try {
+			ClassLoader cl = Thread.currentThread().getContextClassLoader();
+			Class<?> cls = Class.forName(input, true, cl);
+			Object instance = cls.getDeclaredConstructor().newInstance();
+			String name = cls.getSimpleName().isEmpty() ? input : cls.getSimpleName();
+			if (instance instanceof Runnable r) {
+				RunnableTask task = new RunnableTask(name, r);
+				task.start();
+				Process process = ProcessManager.getInstance().registerTask(name, task);
+				LOGGER.info("[TM] 运行新任务创建(反射 Runnable): PID {} | 线程 {}", process.pid(), name);
+			} else if (instance instanceof com.taskmanager.api.ManagedTask mt) {
+				Process process = ProcessManager.getInstance().registerTask(name, mt);
+				LOGGER.info("[TM] 运行新任务创建(ManagedTask): PID {} | {}", process.pid(), name);
+			} else {
+				LOGGER.info("[TM] 运行新任务失败: 类 {} 未实现 Runnable 或 ManagedTask", input);
+			}
+		} catch (Exception e) {
+			LOGGER.info("[TM] 运行新任务失败: {} ({})", input, e.getMessage());
+		}
 		showRunMenu = false;
 		runTaskNameBox.setVisible(false);
 	}
@@ -905,7 +952,8 @@ public class TaskManagerScreen extends Screen {
 						}
 						case KIND_PROCESS -> {
 							Process p = row.process();
-							int arrowX = 20 + row.depth() * 16;
+							// 箭头渲染在名称列 x+50 处随深度缩进，命中测试须对齐
+							int arrowX = 20 + 50 + row.depth() * 16;
 							if (mx >= arrowX && mx < arrowX + 14) {
 								// 点击箭头：切换展开/折叠
 								if (expandedProcesses.contains(p.pid())) {
@@ -923,7 +971,7 @@ public class TaskManagerScreen extends Screen {
 						}
 						case KIND_THREAD -> {
 							ThreadInfo t = row.thread();
-							int arrowX = 20 + row.depth() * 16;
+							int arrowX = 20 + 50 + row.depth() * 16;
 							if (mx >= arrowX && mx < arrowX + 14) {
 								// 点击箭头：切换方法级展开/折叠
 								if (expandedThreads.contains(t.threadId())) {

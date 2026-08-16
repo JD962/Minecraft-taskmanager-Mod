@@ -37,6 +37,7 @@ public final class ResourceSampler {
 	private final MemorySampler memorySampler = new MemorySampler();
 	private final MethodProfiler methodProfiler = MethodProfiler.getInstance();
 	private final NidRegistry nidRegistry = new NidRegistry();
+	private final DiskIoSampler diskIoSampler = new DiskIoSampler();
 	private final ProcessManager processManager = ProcessManager.getInstance();
 	private final com.sun.management.OperatingSystemMXBean osBean =
 		(com.sun.management.OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
@@ -45,6 +46,8 @@ public final class ResourceSampler {
 	private volatile long intervalMs = DEFAULT_INTERVAL_MS;
 	private volatile boolean running = false;
 	private volatile Thread worker;
+	/** 最新磁盘 I/O 速率 [读, 写]（字节/秒），采样线程写入、UI 读取。 */
+	private volatile long[] diskIoRate;
 
 	private ResourceSampler() {
 	}
@@ -141,6 +144,11 @@ public final class ResourceSampler {
 		// 单次读取 gpuSampler，避免 setGpuSampler(null) 并发替换时多次读取产生 NPE
 		GpuSampler gpu = gpuSampler;
 		double gpuUsage = gpu != null && gpu.isAvailable() ? gpu.sampleGpuUsage() : Double.NaN;
+		// 磁盘 I/O 速率采样（Windows 下 JNA GetProcessIoCounters；不可用则保持 null）
+		long[] ioRate = diskIoSampler.sampleRate();
+		if (ioRate != null) {
+			diskIoRate = ioRate;
+		}
 
 		// 归类线程到全局进程（未匹配的归入「其他线程」）
 		Map<String, List<Map.Entry<Long, ThreadSampler.Snapshot>>> processNameToThreads = new HashMap<>();
@@ -206,6 +214,16 @@ public final class ResourceSampler {
 	/** 堆内存已提交（字节）：对应物理内存 RSS，数值稳定不随 GC 波动，用于概览展示。 */
 	public long heapCommitted() {
 		return memorySampler.heapCommitted();
+	}
+
+	/** 磁盘 I/O 是否可用（Windows + JNA 可用）。 */
+	public boolean diskIoAvailable() {
+		return diskIoSampler.isAvailable();
+	}
+
+	/** 磁盘 I/O 速率 [读, 写]（字节/秒），不可用或无基线返回 null。 */
+	public long[] diskIoRate() {
+		return diskIoRate;
 	}
 
 	/** GPU 使用率（百分比 0~100，不可用返回 NaN）。 */

@@ -52,6 +52,10 @@ dependencies {
 	// 拼音搜索（BSD 许可，宽松，可闭源）；include 内嵌进最终 jar（jar-in-jar）
 	implementation "com.belerweb:pinyin4j:2.5.1"
 	include "com.belerweb:pinyin4j:2.5.1"
+
+	// 磁盘 I/O 监控：JNA 调 Windows GetProcessIoCounters（LWJGL 传递依赖已提供运行时 JNA，编译期仅需签名）
+	compileOnly "net.java.dev.jna:jna:5.17.0"
+	compileOnly "net.java.dev.jna:jna-platform:5.17.0"
 }
 
 processResources {
