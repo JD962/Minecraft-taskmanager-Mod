@@ -296,6 +296,21 @@ public class TaskManagerScreen extends Screen {
 		return panelTop();
 	}
 
+	/** 状态列偏移（相对列表 x 起点），窄窗口下 clamp 避免溢出。 */
+	private int colState() {
+		return Math.min(220, this.width - 280);
+	}
+
+	/** CPU 列偏移。 */
+	private int colCpu() {
+		return Math.min(300, this.width - 200);
+	}
+
+	/** 内存列偏移。 */
+	private int colMem() {
+		return Math.min(380, this.width - 120);
+	}
+
 	/** 将滚动偏移 clamp 到当前内容范围，防止展开/折叠后内容滚出视口导致列表空白。 */
 	private void clampScrollToContent(int rowCount) {
 		int viewportHeight = listBottom() - listTop();
@@ -334,9 +349,9 @@ public class TaskManagerScreen extends Screen {
 		int y = 82;
 		tmText(graphics, tr("taskmanager.col.pid"), x, y, textMuted());
 		tmText(graphics, tr("taskmanager.col.name"), x + 50, y, textMuted());
-		tmText(graphics, tr("taskmanager.col.state"), x + 220, y, textMuted());
-		tmText(graphics, tr("taskmanager.col.cpu"), x + 300, y, textMuted());
-		tmText(graphics, tr("taskmanager.col.memory"), x + 380, y, textMuted());
+		tmText(graphics, tr("taskmanager.col.state"), x + colState(), y, textMuted());
+		tmText(graphics, tr("taskmanager.col.cpu"), x + colCpu(), y, textMuted());
+		tmText(graphics, tr("taskmanager.col.memory"), x + colMem(), y, textMuted());
 
 		int top = listTop();
 		int bottom = listBottom();
@@ -384,9 +399,9 @@ public class TaskManagerScreen extends Screen {
 		tmText(graphics, hasChildren ? (expanded ? "v" : ">") : " ", x + ind, screenY, text());
 		tmText(graphics, String.valueOf(p.pid()), x + ind + 12, screenY, text());
 		tmText(graphics, p.name(), x + 50 + ind, screenY, text());
-		tmText(graphics, tr(stateKey(p.state())), x + 220 + ind, screenY, stateColor(p));
-		tmText(graphics, cpuText(p), x + 300 + ind, screenY, heatColor(p.usage().cpuUsage()));
-		tmText(graphics, memoryText(p), x + 380 + ind, screenY, textMuted());
+		tmText(graphics, tr(stateKey(p.state())), x + colState() + ind, screenY, stateColor(p));
+		tmText(graphics, cpuText(p), x + colCpu() + ind, screenY, heatColor(p.usage().cpuUsage()));
+		tmText(graphics, memoryText(p), x + colMem() + ind, screenY, textMuted());
 	}
 
 	private void renderThreadRow(GuiGraphicsExtractor graphics, ThreadInfo thread, int depth, int x, int screenY, boolean hasChildren) {
@@ -398,9 +413,9 @@ public class TaskManagerScreen extends Screen {
 		tmText(graphics, hasChildren ? (expanded ? "v" : ">") : " ", x + ind, screenY, textMuted());
 		String prefix = thread.daemon() ? "*" : "-";
 		tmText(graphics, prefix + " " + thread.threadName(), x + ind + 12, screenY, textMuted());
-		tmText(graphics, stateText(thread.state()), x + 220 + ind, screenY, stateColor2(thread.state()));
-		tmText(graphics, cpuText2(thread), x + 300 + ind, screenY, heatColor(thread.usage().cpuUsage()));
-		tmText(graphics, allocRateText(thread.allocatedRate()), x + 380 + ind, screenY, textMuted());
+		tmText(graphics, stateText(thread.state()), x + colState() + ind, screenY, stateColor2(thread.state()));
+		tmText(graphics, cpuText2(thread), x + colCpu() + ind, screenY, heatColor(thread.usage().cpuUsage()));
+		tmText(graphics, allocRateText(thread.allocatedRate()), x + colMem() + ind, screenY, textMuted());
 	}
 
 	private static String cpuText2(ThreadInfo t) {
