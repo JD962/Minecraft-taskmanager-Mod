@@ -163,7 +163,7 @@ public final class ResourceSampler {
 				}
 				process.addThread(new ThreadInfo(s.name(), e.getKey(), nidRegistry.nidOf(e.getKey()),
 					s.state(), s.daemon(), s.priority(),
-					s.allocatedBytes(), s.blockedCount(), s.waitedCount(), s.topFrame(),
+					s.allocatedBytes(), s.allocRate(), s.blockedCount(), s.waitedCount(), s.topFrame(),
 					new ResourceUsage(threadCpu, -1L, -1L, Double.NaN)));
 			}
 			// 全局进程内存为整个 JVM 共享，标注到每个全局进程（近似）

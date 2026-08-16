@@ -414,6 +414,7 @@ public final class PrcExporter {
 					out.writeBoolean(t.daemon());
 					out.writeInt(t.priority());
 					out.writeLong(t.allocatedBytes());
+					out.writeLong(t.allocatedRate());
 					out.writeLong(t.blockedCount());
 					out.writeLong(t.waitedCount());
 					writeString(out, t.topFrame() == null ? "" : t.topFrame());

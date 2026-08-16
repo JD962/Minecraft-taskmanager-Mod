@@ -400,7 +400,7 @@ public class TaskManagerScreen extends Screen {
 		tmText(graphics, prefix + " " + thread.threadName(), x + ind + 12, screenY, textMuted());
 		tmText(graphics, stateText(thread.state()), x + 220 + ind, screenY, stateColor2(thread.state()));
 		tmText(graphics, cpuText2(thread), x + 300 + ind, screenY, heatColor(thread.usage().cpuUsage()));
-		tmText(graphics, "N/A", x + 380 + ind, screenY, textMuted());
+		tmText(graphics, allocRateText(thread.allocatedRate()), x + 380 + ind, screenY, textMuted());
 	}
 
 	private static String cpuText2(ThreadInfo t) {
@@ -480,7 +480,7 @@ public class TaskManagerScreen extends Screen {
 	}
 
 	private void renderThreadDetail(GuiGraphicsExtractor graphics, ThreadInfo t, int panelTop) {
-		String alloc = t.allocatedBytes() >= 0 ? " | 分配 " + allocText(t.allocatedBytes()) : "";
+		String alloc = t.allocatedRate() >= 0 ? " | 分配 " + allocRateText(t.allocatedRate()) : "";
 		String nid = t.nativeId() >= 0 ? "0x" + Long.toHexString(t.nativeId()) : "N/A";
 		tmText(graphics, String.format("线程 %s (#%d nid=%s) | %s | %s | %s %d | CPU %s%s",
 			t.threadName(), t.threadId(), nid, stateText(t.state()),
@@ -694,8 +694,8 @@ public class TaskManagerScreen extends Screen {
 		clampScrollToContent(rows.size());
 		int top = listTop();
 		int bottom = listBottom();
-		// 鼠标必须在列表区域内（顶部页签以上、底部面板以下）
-		if (my >= top && my < bottom) {
+		// 鼠标必须在列表区域内（顶部页签以上、底部面板以下），且避开右侧滚动条区域（width-14 起），避免拖动滚动条时误触列表行
+		if (my >= top && my < bottom && mx < this.width - 14) {
 			for (Row row : rows) {
 				int screenY = top + row.y() - scrollOffset;
 				if (screenY >= bottom) {
@@ -1010,12 +1010,27 @@ public class TaskManagerScreen extends Screen {
 	}
 
 	private static String memoryText(Process p) {
-		if (p.usage().heapMemory() < 0) {
+		long heap = p.usage().heapMemory();
+		if (heap < 0) {
 			// 实体进程为逻辑容器，无独立内存
 			return "-";
 		}
-		// 全局进程共享 JVM 堆，不逐行重复显示数值，避免误导
-		return "共享";
+		// 全局进程共享 JVM 堆，显示堆已用数值（共享语义在详情面板标注）
+		return formatBytes(heap);
+	}
+
+	/** 分配速率格式化（字节/秒），无基线返回 "-"。 */
+	private static String allocRateText(long bytesPerSec) {
+		if (bytesPerSec < 0) {
+			return "-";
+		}
+		if (bytesPerSec < 1024) {
+			return bytesPerSec + " B/s";
+		}
+		if (bytesPerSec < 1024 * 1024) {
+			return String.format("%.0f KB/s", bytesPerSec / 1024.0);
+		}
+		return String.format("%.1f MB/s", bytesPerSec / (1024.0 * 1024.0));
 	}
 
 	private static String formatBytes(long bytes) {

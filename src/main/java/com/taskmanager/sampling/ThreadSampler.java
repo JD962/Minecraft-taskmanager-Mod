@@ -30,6 +30,10 @@ public final class ThreadSampler {
 	private final Map<Long, Long> lastWallTime = new HashMap<>();
 	/** CPU 平滑值（EMA），消除单次差分噪声。 */
 	private final Map<Long, Double> smoothedCpu = new HashMap<>();
+	/** 上次采样的累计分配字节（用于算分配速率）。 */
+	private final Map<Long, Long> lastAllocated = new HashMap<>();
+	/** 上次采样分配的时间（纳秒）。 */
+	private final Map<Long, Long> lastAllocTime = new HashMap<>();
 
 	public ThreadSampler() {
 		this.cpuSupported = threadBean.isThreadCpuTimeSupported();
@@ -43,9 +47,9 @@ public final class ThreadSampler {
 		}
 	}
 
-	/** 单次采样结果。 */
+	/** 单次采样结果。allocRate 为分配速率（字节/秒，-1 表示无基线或不支持）。 */
 	public record Snapshot(String name, Thread.State state, boolean daemon, int priority,
-	                       long allocatedBytes, String topFrame, double cpuPercent,
+	                       long allocatedBytes, long allocRate, String topFrame, double cpuPercent,
 	                       long blockedCount, long waitedCount) {
 	}
 
@@ -69,16 +73,39 @@ public final class ThreadSampler {
 			long cpuNanos = threadBean.getThreadCpuTime(id);
 			double cpuPercent = diffCpu(id, cpuNanos, now);
 			long allocated = allocSupported ? allocBean.getThreadAllocatedBytes(id) : -1L;
+			long allocRate = diffAlloc(id, allocated, now);
 			String topFrame = topFrame(info.getStackTrace());
 			result.put(id, new Snapshot(info.getThreadName(), info.getThreadState(), info.isDaemon(),
-				info.getPriority(), allocated, topFrame, cpuPercent,
+				info.getPriority(), allocated, allocRate, topFrame, cpuPercent,
 				info.getBlockedCount(), info.getWaitedCount()));
 		}
 		// 清理已消失线程的缓存，防止内存增长
 		lastCpuTime.keySet().retainAll(result.keySet());
 		lastWallTime.keySet().retainAll(result.keySet());
 		smoothedCpu.keySet().retainAll(result.keySet());
+		lastAllocated.keySet().retainAll(result.keySet());
+		lastAllocTime.keySet().retainAll(result.keySet());
 		return result;
+	}
+
+	/** 分配速率（字节/秒）：两次采样累计分配差 / 时间差；首次采样无基线返回 -1。 */
+	private long diffAlloc(long id, long allocated, long nowNanos) {
+		if (!allocSupported || allocated < 0) {
+			return -1L;
+		}
+		Long last = lastAllocated.get(id);
+		Long lastTime = lastAllocTime.get(id);
+		lastAllocated.put(id, allocated);
+		lastAllocTime.put(id, nowNanos);
+		if (last == null || lastTime == null) {
+			return -1L; // 首次采样，无基线
+		}
+		long delta = allocated - last;
+		long timeDelta = nowNanos - lastTime;
+		if (timeDelta <= 0 || delta < 0) {
+			return -1L;
+		}
+		return delta * 1_000_000_000L / timeDelta;
 	}
 
 	private double diffCpu(long id, long cpuNanos, long nowNanos) {
