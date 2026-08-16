@@ -88,8 +88,8 @@ public final class ProcessManager {
 			if (process == null) {
 				return null;
 			}
-			// 恢复被暂停的 AI，避免 noAI 状态随实体持久化
-			if (process.state() == ProcessState.PAUSED && entity instanceof Mob mob) {
+			// 恢复被暂停的 AI，避免 noAI 状态随实体持久化；仅实体仍有效（未被 discard）时恢复，避免在卸载/销毁阶段触发实体区块写
+			if (process.state() == ProcessState.PAUSED && entity instanceof Mob mob && !entity.isRemoved()) {
 				mob.setNoAi(false);
 			}
 			process.setState(ProcessState.TERMINATED);
@@ -180,14 +180,11 @@ public final class ProcessManager {
 		return processes.size();
 	}
 
-	/** 清空全部进程（服务器停止时调用），先恢复暂停实体 AI、解冻残留冻结目标，再清表。 */
+	/** 清空全部进程（服务器停止时调用），解冻残留冻结目标后清表。不在停止阶段恢复实体 AI，避免触发实体区块写加剧锁冲突。 */
 	public void clear() {
 		synchronized (registryLock) {
 			for (Process process : processes.values()) {
 				Object target = process.target();
-				if (process.state() == ProcessState.PAUSED && target instanceof Mob mob) {
-					mob.setNoAi(false);
-				}
 				// 停机安全：若服务器 tick 被冻结，停机前解冻，避免冻结状态残留
 				if (target instanceof Freezable freezable && freezable.isFrozen()) {
 					freezable.unfreeze();

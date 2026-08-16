@@ -414,18 +414,22 @@ public final class OperationEngine {
 		}
 	}
 
-	/** 实体副作用（setNoAi/discard）必须在服务器主线程执行；非主线程时阻塞调度到主线程。 */
+	/** 实体副作用（setNoAi/discard）必须在服务器主线程执行；服务器已停止时跳过（executeBlocking 会阻塞，且实体世界已关闭）。 */
 	private static void runOnServerThread(Runnable action) {
 		MinecraftServer server = ProcessManager.getInstance().server();
-		if (server != null && !server.isSameThread()) {
+		if (server == null) {
+			return;
+		}
+		if (server.isSameThread()) {
+			action.run();
+		} else if (server.isRunning()) {
 			try {
 				server.executeBlocking(action);
 			} catch (Exception e) {
-				// 服务器已停止或调度失败：此时实体世界已关闭，副作用无意义，安全忽略
+				// 调度失败，安全忽略
 			}
-		} else {
-			action.run();
 		}
+		// 服务器已停止：跳过，避免 executeBlocking 阻塞导致退出卡死
 	}
 
 	private void log(String operator, String action, Process process, String result) {
