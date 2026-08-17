@@ -1,6 +1,6 @@
 # These are supported funding model platforms
 
-github: JD962
+github: 
 patreon: # Replace with a single Patreon username
 open_collective: # Replace with a single Open Collective username
 ko_fi: # Replace with a single Ko-fi username
@@ -13,5 +13,5 @@ polar: # Replace with a single Polar username
 buy_me_a_coffee: # Replace with a single Buy Me a Coffee username
 thanks_dev: # Replace with a single thanks.dev username
 custom: 
-  - https://afdian.com/a/qingyun_long
-  - https://space.bilibili.com/1110522818
+  - 'https://afdian.com/a/qingyun_long'
+  - 'https://space.bilibili.com/1110522818'
